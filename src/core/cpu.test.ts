@@ -259,6 +259,22 @@ describe('CpuR3000A multiply divide', () => {
     expect(cpu.getReg(9)).toBe(1);
   });
 
+  test('mfhi and mflo results are visible to the very next instruction', () => {
+    const bus = new RamBus();
+    const cpu = new CpuR3000A(makeDeps(bus, { n: 0 }, [], []));
+    poke(bus, 0x200, rtype(0x18, 4, 5));
+    poke(bus, 0x204, rtype(0x10, 0, 0, 8));
+    poke(bus, 0x208, rtype(0x21, 8, 0, 10));
+    poke(bus, 0x20C, rtype(0x12, 0, 0, 9));
+    poke(bus, 0x210, rtype(0x21, 9, 0, 11));
+    cpu.reset(0x200);
+    cpu.setReg(4, 0x10000);
+    cpu.setReg(5, 0x30000);
+    cpu.run(64);
+    expect(cpu.getReg(10)).toBe(3);
+    expect(cpu.getReg(11)).toBe(0);
+  });
+
   test('divu by zero', () => {
     const bus = new RamBus();
     const cpu = new CpuR3000A(makeDeps(bus, { n: 0 }, [], []));

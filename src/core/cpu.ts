@@ -302,8 +302,7 @@ export class CpuR3000A implements Cpu {
               return consumed;
             case 0x10:
               if (rd !== 0) {
-                this.loadReg1T = rd;
-                this.loadReg1V = this.hiV | 0;
+                regs[rd] = this.hiV | 0;
               }
               break;
             case 0x11:
@@ -311,8 +310,7 @@ export class CpuR3000A implements Cpu {
               break;
             case 0x12:
               if (rd !== 0) {
-                this.loadReg1T = rd;
-                this.loadReg1V = this.loV | 0;
+                regs[rd] = this.loV | 0;
               }
               break;
             case 0x13:
