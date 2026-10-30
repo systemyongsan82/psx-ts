@@ -194,6 +194,7 @@ export interface Spu extends IoDevice, DmaDevice {
 
 export interface MdecUnit extends IoDevice, DmaDevice {
   readonly busy: boolean;
+  dmaReadWord(): number;
 }
 
 export interface RawSectorIo {
