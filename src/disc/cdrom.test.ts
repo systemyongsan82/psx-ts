@@ -18,7 +18,7 @@ const BIN = 'Resident Evil (USA)/Resident Evil (USA).bin';
 const REG0 = 0x1F801800;
 const REG1 = 0x1F801801;
 const REG2 = 0x1F801802;
-const REG_ACK = 0x1F801803;
+const REG3 = 0x1F801803;
 
 class TestSched implements Scheduler {
   private _now = 0;
@@ -155,27 +155,53 @@ function makeDrive(): Fixture {
 }
 
 function sendCommand(f: Fixture, id: number, params: Array<number>): void {
+  f.cd.store8(REG0, 0x00);
   for (const p of params) {
-    f.cd.store8(REG1, p);
+    f.cd.store8(REG2, p);
   }
-  f.cd.store8(REG0, id);
+  f.cd.store8(REG1, id);
+}
+
+function setIndex(f: Fixture, i: number): void {
+  f.cd.store8(REG0, i & 0x03);
+}
+
+function intNumber(f: Fixture): number {
+  setIndex(f, 1);
+
+  return f.cd.load8(REG3) & 0x07;
+}
+
+function drainResponse(f: Fixture): Array<number> {
+  const out: Array<number> = [];
+  for (let guard = 0; guard < 20; guard++) {
+    if ((f.cd.load8(REG0) & 0x20) === 0) {
+      break;
+    }
+    out.push(f.cd.load8(REG1));
+  }
+
+  return out;
 }
 
 interface IntResult {
-  flags: number;
+  num: number;
   resp: Array<number>;
 }
 
-function settleInt(f: Fixture): IntResult {
-  f.sched.advance(20_000);
-  const flags = f.cd.load8(REG2);
-  const resp: Array<number> = [];
-  while ((f.cd.load8(REG0) & 0x04) !== 0) {
-    resp.push(f.cd.load8(REG1));
-  }
-  f.cd.store8(REG_ACK, 0x1F);
+function settle(f: Fixture, advance: number): IntResult {
+  f.sched.advance(advance);
+  const num = intNumber(f);
+  const resp = drainResponse(f);
+  setIndex(f, 1);
+  f.cd.store8(REG3, 0x1F);
 
-  return { flags, resp };
+  return { num, resp };
+}
+
+function ackAll(f: Fixture): void {
+  setIndex(f, 1);
+  f.cd.store8(REG3, 0x1F);
 }
 
 function ramBytes(ram: Uint32Array, start: number, len: number): Uint8Array {
@@ -203,15 +229,10 @@ const CD_CH: DmaChannel = { id: 3 };
 
 test('hle findFile and readFileBytes match known disc facts', () => {
   const f = makeDrive();
-  const sys = f.iso.find('SYSTEM.CNF');
-  if (sys === null) {
-    throw new Error('SYSTEM.CNF missing');
-  }
   const boot = f.cd.findFile('SYSTEM.CNF');
   if (boot === null) {
     throw new Error('findFile returned null');
   }
-  expect(boot.lba).toBe(sys.lba);
   expect(boot.lba).toBe(270718);
   expect(boot.size).toBe(69);
   const bytes = f.cd.readFileBytes('SYSTEM.CNF', 0, 69);
@@ -271,59 +292,137 @@ test('readIntoRam bulk-copies boot exe into RAM at aligned and offset addresses'
   f.img.close();
 });
 
-test('getstat responds INT3 with status byte and ack clears flags', () => {
+test('getstat: INT3 number 3, status 02h, handshake bits, ack clears', () => {
   const f = makeDrive();
+  expect(f.cd.load8(REG0) & 0x08).toBe(0x08);
   sendCommand(f, 0x01, []);
-  const r = settleInt(f);
-  expect(r.flags).toBe(0x04);
+  const r = settle(f, 30_000);
+  expect(r.num).toBe(3);
   expect(r.resp).toEqual([0x02]);
-  expect(f.cd.load8(REG2)).toBe(0x00);
+  expect(intNumber(f)).toBe(0);
   f.img.close();
 });
 
-test('unknown command responds INT5 with error bit, latch clears on next command', () => {
+test('unknown command 17h responds INT5 with (11h,40h)', () => {
   const f = makeDrive();
-  sendCommand(f, 0x02, []);
-  expect(settleInt(f)).toEqual({ flags: 0x10, resp: [0x03] });
-  sendCommand(f, 0x01, []);
-  expect(settleInt(f)).toEqual({ flags: 0x04, resp: [0x02] });
-  f.img.close();
-});
-
-test('setloc, seek and location reports match the real sector headers', () => {
-  const f = makeDrive();
-  sendCommand(f, 0x0E, [0x60, 0x11, 0x43]);
-  expect(settleInt(f).flags).toBe(0x04);
   sendCommand(f, 0x17, []);
-  expect(settleInt(f)).toEqual({ flags: 0x04, resp: [0x42] });
-  f.sched.advance(13_547_520);
-  expect(settleInt(f)).toEqual({ flags: 0x08, resp: [0x02] });
-  sendCommand(f, 0x10, []);
-  expect(settleInt(f)).toEqual({ flags: 0x04, resp: [0x60, 0x11, 0x43, 0x02, 0x00, 0x00, 0x89, 0x00, 0x00, 0x00, 0x89, 0x00] });
-  sendCommand(f, 0x11, []);
-  expect(settleInt(f)).toEqual({ flags: 0x04, resp: [0x01, 0x01, 0x60, 0x09, 0x43, 0x60, 0x11, 0x43, 0, 0, 0, 0] });
+  expect(settle(f, 30_000)).toEqual({ num: 5, resp: [0x11, 0x40] });
+  sendCommand(f, 0x01, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x02] });
   f.img.close();
 });
 
-test('read pumps INT1 per sector at CD_SECTOR_CYCLES and dma moves user data', () => {
+test('setloc, seekL and the 8-byte location reports match real sector headers', () => {
   const f = makeDrive();
-  sendCommand(f, 0x0E, [0x00, 0x02, 0x00]);
-  expect(settleInt(f).flags).toBe(0x04);
+  sendCommand(f, 0x02, [0x60, 0x11, 0x43]);
+  expect(settle(f, 30_000).num).toBe(3);
+  sendCommand(f, 0x15, []);
+  const seekAck = settle(f, 30_000);
+  expect(seekAck.num).toBe(3);
+  expect(seekAck.resp).toEqual([0x40]);
+  f.sched.advance(13_547_520);
+  const done = settle(f, 0);
+  expect(done.num).toBe(2);
+  expect(done.resp).toEqual([0x02]);
+  sendCommand(f, 0x10, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x60, 0x11, 0x43, 0x02, 0x00, 0x00, 0x89, 0x00] });
+  sendCommand(f, 0x11, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x01, 0x01, 0x60, 0x09, 0x43, 0x60, 0x11, 0x43] });
+  f.img.close();
+});
+
+test('readN: INT3 then INT1 per sector, BFRD handshake, DRQSTS, DMA data', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  expect(settle(f, 30_000).num).toBe(3);
   sendCommand(f, 0x06, []);
-  expect(settleInt(f)).toEqual({ flags: 0x04, resp: [0x22] });
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x22] });
+  setIndex(f, 0);
+  expect(f.cd.load8(REG0) & 0x40).toBe(0x00);
   f.cd.tick(CD_SECTOR_CYCLES);
-  expect(f.cd.load8(REG2)).toBe(0x01);
-  expect(settleInt(f)).toEqual({ flags: 0x01, resp: [0x22] });
+  expect(f.cd.load8(REG0) & 0x40).toBe(0x40);
+  expect(intNumber(f)).toBe(1);
+  expect(drainResponse(f)).toEqual([0x22]);
+  setIndex(f, 0);
+  expect(f.cd.load8(REG0) & 0x40).toBe(0x40);
+  f.cd.store8(REG3, 0x00);
+  expect(f.cd.load8(REG0) & 0x40).toBe(0x00);
+  f.cd.store8(REG3, 0x80);
+  expect(f.cd.load8(REG0) & 0x40).toBe(0x40);
   f.irq.dmaDoneCh.length = 0;
   f.cd.dmaStart(CD_CH, { ...DMA_CFG, base: 0x0010_1000 }, f.ram);
   expect(f.irq.dmaDoneCh).toEqual([3]);
   const want = readEntryBytes(f.img, 0, 0, 2048);
   expect(Array.from(ramBytes(f.ram, 0x0010_1000, 2048))).toEqual(Array.from(want));
-  expect(f.cd.load8(REG2)).toBe(0x00);
+  expect(f.cd.load8(REG0) & 0x40).toBe(0x00);
+  expect(intNumber(f)).toBe(1);
+  ackAll(f);
+  expect(intNumber(f)).toBe(0);
   f.cd.tick(CD_SECTOR_CYCLES);
-  expect(f.cd.load8(REG2)).toBe(0x01);
-  f.cd.store8(REG_ACK, 0x01);
-  expect(f.cd.load8(REG2)).toBe(0x00);
+  expect(intNumber(f)).toBe(1);
+  expect(settle(f, 0).resp).toEqual([0x22]);
+  f.img.close();
+});
+
+test('pio data reads at 1802 pop sequentially after BFRD load', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  expect(settle(f, 30_000).num).toBe(3);
+  sendCommand(f, 0x06, []);
+  expect(settle(f, 30_000).num).toBe(3);
+  f.cd.tick(CD_SECTOR_CYCLES);
+  ackAll(f);
+  setIndex(f, 0);
+  f.cd.store8(REG3, 0x80);
+  const want = readEntryBytes(f.img, 0, 0, 2048);
+  const got: Array<number> = [];
+  for (let i = 0; i < 2048; i++) {
+    got.push(f.cd.load8(REG2));
+  }
+  expect(got).toEqual(Array.from(want));
+  expect(f.cd.load8(REG0) & 0x40).toBe(0x00);
+  f.img.close();
+});
+
+test('pause keeps bit5 in first response and clears it in second', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x06, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x22] });
+  f.cd.tick(CD_SECTOR_CYCLES);
+  expect(settle(f, 0).num).toBe(1);
+  sendCommand(f, 0x09, []);
+  const ack = settle(f, 30_000);
+  expect(ack).toEqual({ num: 3, resp: [0x22] });
+  const done = settle(f, 2_200_000);
+  expect(done).toEqual({ num: 2, resp: [0x02] });
+  sendCommand(f, 0x01, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x02] });
+  f.img.close();
+});
+
+test('stop turns motor off and parks at track 1 start', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x06, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x22] });
+  sendCommand(f, 0x08, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x02] });
+  const done = settle(f, 14_000_000);
+  expect(done).toEqual({ num: 2, resp: [0x00] });
+  sendCommand(f, 0x01, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x00] });
+  f.img.close();
+});
+
+test('init resets mode to 20h and aborts pending reads', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x0A, []);
+  const ack = settle(f, 81_000);
+  expect(ack.num).toBe(3);
+  expect(ack.resp).toEqual([0x02]);
+  const done = settle(f, 10_000_000);
+  expect(done.num).toBe(2);
+  sendCommand(f, 0x0F, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x02, 0x20, 0, 0, 0] });
   f.img.close();
 });
 
@@ -348,7 +447,15 @@ function makeXaAudioSector(file: number, chan: number): Uint8Array {
   return raw;
 }
 
-test('xa audio sectors route to the spu sink with packed subheader', () => {
+function makeForm1Sector(): Uint8Array {
+  const raw = makeXaAudioSector(1, 3);
+  raw[18] = 0x89;
+  raw[19] = 0;
+
+  return raw;
+}
+
+test('xa audio routes to spu sink with packed subheader, no INT1', () => {
   const f = makeDrive();
   f.cd.deliverSector(makeXaAudioSector(1, 3));
   expect(f.spu.xaCaptures.length).toBe(1);
@@ -358,58 +465,80 @@ test('xa audio sectors route to the spu sink with packed subheader', () => {
   }
   expect(cap.channel).toBe(3);
   expect(cap.subheader).toBe(((1 << 24) | (3 << 16) | (0x64 << 8) | 1) >>> 0);
-  expect(cap.payload.length).toBe(2328);
+  expect(cap.payload.length).toBe(2304);
   expect(cap.payload[0]).toBe(0xAB);
   expect(cap.payload[1]).toBe(0xCD);
-  expect(f.cd.load8(REG2)).toBe(0x00);
+  expect(intNumber(f)).toBe(0);
+  expect(f.cd.load8(REG0) & 0x40).toBe(0x00);
   f.img.close();
 });
 
-function makeForm1Sector(): Uint8Array {
-  const raw = makeXaAudioSector(1, 3);
-  raw[18] = 0x08;
-  raw[19] = 0;
-
-  return raw;
-}
-
-test('form1 data sector stages 2048 bytes for DMA, no xa route', () => {
+test('setmode 00h sends audio to data path with 800h fifo', () => {
   const f = makeDrive();
-  f.ram.fill(0);
-  f.cd.deliverSector(makeForm1Sector());
-  expect(f.spu.xaCaptures.length).toBe(0);
-  expect(f.cd.load8(REG2)).toBe(0x01);
-  f.cd.dmaStart(CD_CH, { ...DMA_CFG, base: 0x0010_0000 }, f.ram);
-  expect(Array.from(ramBytes(f.ram, 0x0010_0000, 4))).toEqual([0xAB, 0xCD, 0, 0]);
-  expect(f.cd.load8(REG2)).toBe(0x01);
-  f.cd.store8(REG_ACK, 0x01);
-  expect(f.cd.load8(REG2)).toBe(0x00);
-  f.cd.deliverSector(makeForm1Sector());
-  f.cd.dmaStart(CD_CH, { ...DMA_CFG, base: 0x0010_0000 }, f.ram);
-  expect(Array.from(ramBytes(f.ram, 0x0010_0000, 4))).toEqual([0xAB, 0xCD, 0, 0]);
-  f.img.close();
-});
-
-test('mute suppresses xa routing and unmute restores it', () => {
-  const f = makeDrive();
-  sendCommand(f, 0x0B, []);
-  expect(settleInt(f).flags).toBe(0x04);
+  sendCommand(f, 0x0E, [0x00]);
+  expect(settle(f, 30_000).num).toBe(3);
   f.cd.deliverSector(makeXaAudioSector(1, 3));
   expect(f.spu.xaCaptures.length).toBe(0);
-  sendCommand(f, 0x0C, []);
-  expect(settleInt(f).flags).toBe(0x04);
-  f.cd.deliverSector(makeXaAudioSector(1, 3));
-  expect(f.spu.xaCaptures.length).toBe(1);
+  expect(intNumber(f)).toBe(1);
+  setIndex(f, 0);
+  f.cd.store8(REG3, 0x80);
+  setIndex(f, 0);
+  const got: Array<number> = [];
+  for (let i = 0; i < 4; i++) {
+    got.push(f.cd.load8(REG2));
+  }
+  expect(got).toEqual([0xAB, 0xCD, 0, 0]);
   f.img.close();
 });
 
-test('setfilter passes only matching file and channel', () => {
+test('setmode 48h + setfilter gates xa by file/channel', () => {
   const f = makeDrive();
+  sendCommand(f, 0x0E, [0x48]);
+  expect(settle(f, 30_000).num).toBe(3);
   sendCommand(f, 0x0D, [0x01, 0x02]);
-  expect(settleInt(f).flags).toBe(0x04);
+  expect(settle(f, 30_000).num).toBe(3);
   f.cd.deliverSector(makeXaAudioSector(1, 3));
   expect(f.spu.xaCaptures.length).toBe(0);
+  expect(intNumber(f)).toBe(0);
   f.cd.deliverSector(makeXaAudioSector(1, 2));
   expect(f.spu.xaCaptures.length).toBe(1);
+  expect(intNumber(f)).toBe(0);
+  f.img.close();
+});
+
+test('mute consumes xa sectors silently, demute restores', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x0B, []);
+  expect(settle(f, 30_000).num).toBe(3);
+  f.cd.deliverSector(makeXaAudioSector(1, 3));
+  expect(f.spu.xaCaptures.length).toBe(0);
+  expect(intNumber(f)).toBe(0);
+  sendCommand(f, 0x0C, []);
+  expect(settle(f, 30_000).num).toBe(3);
+  f.cd.deliverSector(makeXaAudioSector(1, 3));
+  expect(f.spu.xaCaptures.length).toBe(1);
+  f.img.close();
+});
+
+test('double-speed mode halves the sector period', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x0E, [0x80]);
+  expect(settle(f, 30_000).num).toBe(3);
+  sendCommand(f, 0x06, []);
+  expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x22] });
+  f.cd.tick(Math.floor(CD_SECTOR_CYCLES / 2));
+  expect(intNumber(f)).toBe(1);
+  f.img.close();
+});
+
+test('newer command replaces a still-busy older command', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x01, []);
+  sendCommand(f, 0x01, []);
+  const r = settle(f, 30_000);
+  expect(r).toEqual({ num: 3, resp: [0x02] });
+  ackAll(f);
+  f.sched.advance(1_000_000);
+  expect(drainResponse(f).length).toBe(0);
   f.img.close();
 });

@@ -16,28 +16,38 @@ const RAW_SECTOR_SIZE = 2352;
 const HEADER_OFFSET = 12;
 const HEADER_SIZE = 12;
 const USER_DATA_OFFSET = 24;
-const USER_DATA_SIZE = 2048;
-const XA_PAYLOAD_SIZE = RAW_SECTOR_SIZE - USER_DATA_OFFSET;
+const USER_DATA_SIZE = 0x800;
+const RAW_MINUS_SYNC_SIZE = 0x924;
+const XA_PAYLOAD_SIZE = 2304;
 const FIFO_SIZE = 16;
 const HLE_CHUNK_SECTORS = 40;
 
-const COMMAND_RESPONSE_CYCLES = 20_000;
-const COMMAND_SECOND_CYCLES = 80_000;
+const FIRST_RESPONSE_CYCLES = 30_000;
+const PAUSE_SECOND_CYCLES = 2_200_000;
+const STOP_SECOND_CYCLES = 14_000_000;
+const INIT_FIRST_CYCLES = 81_000;
+const INIT_SECOND_CYCLES = 10_000_000;
+const GETID_SECOND_CYCLES = 100_000;
+const READTOC_SECOND_CYCLES = 5_000_000;
+const MOTORON_SECOND_CYCLES = 33_000;
+const SETSESSION_SECOND_CYCLES = 10_000_000;
 const SEEK_CYCLES = 13_547_520;
 
-const INT1_DATA = 0x01;
-const INT2_COMPLETE = 0x02;
-const INT3_ACK = 0x04;
-const INT4_READY = 0x08;
-const INT5_ERROR = 0x10;
 const IRQ_LINE = 2;
 
+const ERR_INVALID_PARAM = 0x10;
+const ERR_WRONG_PARAMS = 0x20;
+const ERR_INVALID_COMMAND = 0x40;
+
 const ST_ERROR = 0x01;
-const ST_MOTOR = 0x02;
+const ST_SPINDLE = 0x02;
 const ST_READING = 0x20;
 const ST_SEEKING = 0x40;
 
 const SUBMODE_AUDIO = 0x04;
+const SUBMODE_REALTIME = 0x40;
+
+const REQ_BFRD = 0x80;
 
 function bcdByte(v: number): number {
   return (v >> 4) * 10 + (v & 0x0F);
@@ -47,8 +57,8 @@ function toBcd(v: number): number {
   return (((v / 10) | 0) << 4) | (v % 10);
 }
 
-function cacheLba(cache: Uint8Array): number {
-  return (bcdByte(cache[0]) * 60 + bcdByte(cache[1])) * 75 + bcdByte(cache[2]) - 150;
+function msfToLba(min: number, sec: number, frame: number): number {
+  return min * 60 * 75 + sec * 75 + frame - 150;
 }
 
 export class Cdrom implements CdromUnit {
@@ -61,30 +71,37 @@ export class Cdrom implements CdromUnit {
 
   private readonly params = new Uint8Array(FIFO_SIZE);
   private paramCount = 0;
-  private readonly resp = new Uint8Array(FIFO_SIZE);
+  private readonly respWin = new Uint8Array(FIFO_SIZE);
   private respPos = 0;
   private respLen = 0;
+  private respExhausted = false;
   private readonly cmdParams = new Uint8Array(FIFO_SIZE);
 
-  private intFlags = 0;
+  private readonly respQueue: Array<number> = [];
   private readonly locCache = new Uint8Array(HEADER_SIZE);
   private readonly xaRaw = new Uint8Array(RAW_SECTOR_SIZE);
-  private readonly dataBuf = new Uint8Array(USER_DATA_SIZE);
+  private readonly dataBuf = new Uint8Array(RAW_MINUS_SYNC_SIZE);
   private readonly hleChunk = new Uint8Array(HLE_CHUNK_SECTORS * RAW_SECTOR_SIZE);
 
-  private errLatch = false;
+  private index = 0;
+  private irqEnable = 0x1F;
+  private dataPending = false;
+  private dataDone = false;
+  private dataIdx = 0;
+  private dataLen = USER_DATA_SIZE;
+
   private reading = false;
   private seeking = false;
+  private spindleOff = false;
+  private errLatch = false;
+  private locDirty = false;
   private seekTarget = 0;
   private nextSectorLba = 0;
   private sectorTimer = 0;
-  private dataPending = false;
-  private dataIdx = 0;
 
-  private modeByte = 0;
+  private modeByte = 0x40;
   private filterFile = 0;
   private filterChan = 0;
-  private filterOn = false;
   private muted = false;
 
   private firstHandle: object | null = null;
@@ -105,9 +122,7 @@ export class Cdrom implements CdromUnit {
     this.iso = iso;
     this.spu = spu;
     this.irq = irq;
-    if (image.readRawSectors(0, 1, this.xaRaw)) {
-      this.locCache.set(this.xaRaw.subarray(HEADER_OFFSET, HEADER_OFFSET + HEADER_SIZE), 0);
-    }
+    this.snapToSector(0);
   }
 
   // ---- HLE fast paths (synchronous, used by the HLE BIOS kernel) ----
@@ -143,7 +158,7 @@ export class Cdrom implements CdromUnit {
     while (done < length) {
       if (!this.image.readRawSectors(sector, 1, this.xaRaw)) {
         this.log.warn('cdrom', `hle read out of range at lba ${sector}`);
-        break;
+        return out;
       }
       const take = Math.min(USER_DATA_SIZE - skip, length - done);
       out.set(this.xaRaw.subarray(USER_DATA_OFFSET + skip, USER_DATA_OFFSET + skip + take), done);
@@ -160,20 +175,15 @@ export class Cdrom implements CdromUnit {
       return;
     }
     let sector = lba + Math.floor(Math.max(0, byteOffset) / USER_DATA_SIZE);
-    let skip = byteOffset % USER_DATA_SIZE;
-    if (skip < 0) {
-      skip += USER_DATA_SIZE;
-      sector -= 1;
-    }
+    let skip = Math.max(0, byteOffset) % USER_DATA_SIZE;
     let done = 0;
     while (done < length) {
-      const remaining = length - done;
-      const count = Math.min(HLE_CHUNK_SECTORS, Math.ceil(remaining / USER_DATA_SIZE));
+      const count = Math.min(HLE_CHUNK_SECTORS, Math.ceil((length - done) / USER_DATA_SIZE));
       if (!this.image.readRawSectors(sector, count, this.hleChunk)) {
         this.log.warn('cdrom', `hle bulk read out of range at lba ${sector}`);
-        break;
+        return;
       }
-      const take = Math.min(count * USER_DATA_SIZE - skip, remaining);
+      const take = Math.min(count * USER_DATA_SIZE - skip, length - done);
       this.spreadWrite(ram, dstAddr + done, this.hleChunk, USER_DATA_OFFSET + skip, take);
       done += take;
       skip = 0;
@@ -181,135 +191,290 @@ export class Cdrom implements CdromUnit {
     }
   }
 
-  // ---- device registers (1F801800..1F8018FF, decoded on addr & 0x1F) ----
+  // ---- device registers (banks selected by 1F801800 bit0-1) ----
 
   load32(addr: number): number {
-    return (
-      (this.load8(addr) | (this.load8(addr + 1) << 8) | (this.load8(addr + 2) << 16) | (this.load8(addr + 3) << 24)) >>> 0
-    );
+    if ((addr & 0x1F) === 0x02) {
+      return (this.popDataByte() | (this.popDataByte() << 8) | (this.popDataByte() << 16) | (this.popDataByte() << 24)) >>> 0;
+    }
+    const lo = this.load8(addr) & 0xFF;
+
+    return (lo | (lo << 8) | (lo << 16) | (lo << 24)) >>> 0;
   }
 
   load16(addr: number): number {
-    return (this.load8(addr) | (this.load8(addr + 1) << 8)) & 0xFFFF;
+    if ((addr & 0x1F) === 0x02) {
+      return (this.popDataByte() | (this.popDataByte() << 8)) & 0xFFFF;
+    }
+    const lo = this.load8(addr) & 0xFF;
+
+    return (lo | (lo << 8)) & 0xFFFF;
   }
 
   load8(addr: number): number {
-    const r = addr & 0x1F;
-    if (r === 0x00) {
-      let f = 0;
+    const a = addr & 0x1F;
+    if (a === 0x01) {
+      const v = this.respWin[this.respPos];
+      this.respPos = (this.respPos + 1) & 0x0F;
+      if (this.respPos >= this.respLen) {
+        this.respExhausted = true;
+      }
+
+      return v;
+    }
+    if (a === 0x02) {
+      return this.popDataByte();
+    }
+    if (a === 0x00) {
+      let f = this.index;
       if (this.paramCount === 0) {
-        f |= 0x01;
+        f |= 0x08;
+      }
+      if (this.paramCount < FIFO_SIZE) {
+        f |= 0x10;
+      }
+      if (this.respBytesReady()) {
+        f |= 0x20;
+      }
+      if (this.dataPending && !this.dataDone) {
+        f |= 0x40;
       }
       if (this.firstHandle !== null) {
-        f |= 0x02;
-      }
-      if (this.respLen > 0) {
-        f |= 0x04;
-      }
-      if (this.dataPending) {
-        f |= 0x08;
+        f |= 0x80;
       }
 
       return f;
     }
-    if (r === 0x01) {
-      if (this.respLen > 0) {
-        const v = this.resp[this.respPos];
-        this.respPos = (this.respPos + 1) % FIFO_SIZE;
-        this.respLen -= 1;
-
-        return v;
+    if (a === 0x03) {
+      if (this.index === 0 || this.index === 2) {
+        return (this.irqEnable & 0x1F) | 0xE0;
       }
-      if (this.dataPending && this.dataIdx < USER_DATA_SIZE) {
-        const v = this.dataBuf[this.dataIdx];
-        this.dataIdx += 1;
-        if (this.dataIdx >= USER_DATA_SIZE) {
-          this.dataPending = false;
-          this.dataIdx = 0;
-        }
+      const num = this.respQueue.length > 0 ? this.respQueue[0] : 0;
 
-        return v;
-      }
-
-      return 0xFF;
-    }
-    if (r === 0x02) {
-      return this.intFlags & 0x1F;
+      return num | 0xE0;
     }
 
     return 0;
   }
 
   store32(addr: number, value: number): void {
-    for (let i = 0; i < 4; i++) {
-      this.store8(addr + i, (value >>> (i * 8)) & 0xFF);
-    }
-  }
-
-  store16(addr: number, value: number): void {
-    this.store8(addr, value & 0xFF);
-    this.store8(addr + 1, (value >>> 8) & 0xFF);
-  }
-
-  store8(addr: number, value: number): void {
-    const r = addr & 0x1F;
-    if (r === 0x00) {
-      this.beginCommand(value & 0xFF);
+    if ((addr & 0x1F) === 0x02) {
+      this.writeDataPort(value);
 
       return;
     }
-    if (r === 0x01) {
-      if (this.paramCount < FIFO_SIZE) {
-        this.params[this.paramCount] = value & 0xFF;
-        this.paramCount += 1;
+    this.store8(addr, value & 0xFF);
+  }
+
+  store16(addr: number, value: number): void {
+    if ((addr & 0x1F) === 0x02) {
+      if (this.index === 0) {
+        this.pushParam(value & 0xFF);
+        this.pushParam((value >>> 8) & 0xFF);
       }
 
       return;
     }
-    if (r === 0x03) {
-      this.acknowledge(value);
+    this.store8(addr, value & 0xFF);
+  }
 
-      return;
+  private writeDataPort(v: number): void {
+    if (this.index === 0) {
+      this.pushParam(v & 0xFF);
+      this.pushParam((v >>> 8) & 0xFF);
+      this.pushParam((v >>> 16) & 0xFF);
+      this.pushParam((v >>> 24) & 0xFF);
     }
   }
 
-  private acknowledge(value: number): void {
-    this.intFlags &= ~(value & 0x1F) & 0x1F;
-    if ((value & 0xC0) !== 0) {
+  store8(addr: number, value: number): void {
+    const a = addr & 0x1F;
+    if (a === 0x00) {
+      this.index = value & 0x03;
+
+      return;
+    }
+    if (a === 0x01) {
+      if (this.index === 0) {
+        this.beginCommand(value & 0xFF);
+      }
+
+      return;
+    }
+    if (a === 0x02) {
+      if (this.index === 0) {
+        this.pushParam(value & 0xFF);
+      } else if (this.index === 1) {
+        this.irqEnable = value & 0x1F;
+      }
+
+      return;
+    }
+    if (a === 0x03) {
+      if (this.index === 0) {
+        this.writeRequest(value);
+      } else {
+        this.writeIrqFlags(value);
+      }
+    }
+  }
+
+  private pushParam(v: number): void {
+    if (this.paramCount < FIFO_SIZE) {
+      this.params[this.paramCount] = v & 0xFF;
+      this.paramCount += 1;
+    }
+  }
+
+  private writeRequest(value: number): void {
+    if ((value & REQ_BFRD) === 0) {
+      this.dataPending = false;
+      this.dataDone = false;
+      this.dataIdx = 0;
+    } else if (!this.dataPending) {
+      this.stageDataFifo();
+    }
+  }
+
+  private writeIrqFlags(value: number): void {
+    const ackBits = value & 0x1F;
+    if (ackBits !== 0) {
+      const keep: Array<number> = [];
+      for (let i = 0; i < this.respQueue.length; i++) {
+        const num = this.respQueue[i];
+        if ((ackBits & (1 << (num - 1))) === 0) {
+          keep.push(num);
+        }
+      }
+      this.respQueue.length = 0;
+      for (let i = 0; i < keep.length; i++) {
+        this.respQueue.push(keep[i]);
+      }
+      this.respLen = 0;
+      this.respPos = 0;
+      this.respExhausted = false;
+      this.respWin.fill(0);
+    }
+    if ((value & 0x40) !== 0) {
       this.paramCount = 0;
     }
   }
 
-  private setInt(mask: number): void {
-    const before = this.intFlags;
-    this.intFlags |= mask & 0x1F;
-    if (before !== this.intFlags) {
+  private respBytesReady(): boolean {
+    return !this.respExhausted && this.respPos < this.respLen;
+  }
+
+  // ---- interrupts ----
+
+  private queueInt(num: number): void {
+    if (this.respQueue.length >= 8) {
+      this.log.warn('cdrom', 'response interrupt queue overflow');
+
+      return;
+    }
+    this.respQueue.push(num);
+    if ((this.irqEnable & (1 << (num - 1))) !== 0) {
       this.irq.raise(IRQ_LINE);
     }
   }
 
-  // ---- command state machine ----
+  private pushResponse(bytes: Array<number>): void {
+    if (this.respLen === 0) {
+      this.respWin.fill(0);
+      this.respPos = 0;
+      this.respExhausted = false;
+    }
+    for (let i = 0; i < bytes.length; i++) {
+      if (this.respLen >= FIFO_SIZE) {
+        this.log.warn('cdrom', 'response fifo overflow, bytes dropped');
+
+        return;
+      }
+      this.respWin[this.respLen] = bytes[i] & 0xFF;
+      this.respLen += 1;
+    }
+  }
+
+  private respondAck(bytes: Array<number>): void {
+    this.pushResponse(bytes);
+    this.queueInt(3);
+  }
+
+  private respondOne(byte: number, num: number): void {
+    if (this.respLen === 0) {
+      this.respWin.fill(0);
+      this.respPos = 0;
+      this.respExhausted = false;
+    }
+    if (this.respLen < FIFO_SIZE) {
+      this.respWin[this.respLen] = byte & 0xFF;
+      this.respLen += 1;
+    } else {
+      this.log.warn('cdrom', 'response fifo overflow, byte dropped');
+    }
+    this.queueInt(num);
+  }
+
+  private respondSecond(num: number, cycles: number, makeBytes: () => Array<number>): void {
+    this.secondHandle = this.sched.at(cycles, () => {
+      this.secondHandle = null;
+      this.pushResponse(makeBytes());
+      this.queueInt(num);
+    });
+  }
+
+  private respondError(code: number): void {
+    this.errLatch = true;
+    this.pushResponse([0x11, code]);
+    this.queueInt(5);
+  }
+
+  // ---- drive state helpers ----
+
+  private snapToSector(lba: number): void {
+    if (lba < 0 || lba >= this.image.totalSectors) {
+      return;
+    }
+    if (this.image.readRawSectors(lba, 1, this.xaRaw)) {
+      this.locCache.set(this.xaRaw.subarray(HEADER_OFFSET, HEADER_OFFSET + HEADER_SIZE), 0);
+    }
+  }
+
+  private cacheLba(): number {
+    return (bcdByte(this.locCache[0]) * 60 + bcdByte(this.locCache[1])) * 75 + bcdByte(this.locCache[2]) - 150;
+  }
+
+  private driveStat(): number {
+    let s = this.spindleOff ? 0 : ST_SPINDLE;
+    if (this.reading) {
+      s |= ST_READING;
+    }
+    if (this.seeking) {
+      s = ST_SEEKING;
+    }
+    if (this.errLatch) {
+      s |= ST_ERROR;
+    }
+
+    return s;
+  }
+
+  private sectorPeriod(): number {
+    return (this.modeByte & 0x80) !== 0 ? Math.floor(CD_SECTOR_CYCLES / 2) : CD_SECTOR_CYCLES;
+  }
+
+  // ---- command handlers ----
 
   private beginCommand(id: number): void {
     if (this.firstHandle !== null) {
-      this.log.warn('cdrom', `command 0x${id.toString(16)} while response pending, dropped`);
-
-      return;
+      this.sched.cancel(this.firstHandle);
+      this.firstHandle = null;
     }
     for (let i = 0; i < this.paramCount; i++) {
       this.cmdParams[i] = this.params[i];
     }
     const argc = this.paramCount;
     this.paramCount = 0;
-    this.cancelSideEffectHandles();
-    this.firstHandle = this.sched.at(COMMAND_RESPONSE_CYCLES, () => {
-      this.firstHandle = null;
-      this.errLatch = false;
-      this.runCommand(id, argc);
-    });
-  }
-
-  private cancelSideEffectHandles(): void {
     if (this.secondHandle !== null) {
       this.sched.cancel(this.secondHandle);
       this.secondHandle = null;
@@ -319,94 +484,81 @@ export class Cdrom implements CdromUnit {
       this.seekHandle = null;
       this.seeking = false;
     }
-  }
-
-  private pushResponse(bytes: Array<number>): void {
-    for (let i = 0; i < bytes.length; i++) {
-      if (this.respLen >= FIFO_SIZE) {
-        this.log.warn('cdrom', 'response fifo overflow, bytes dropped');
-
-        return;
-      }
-      this.resp[(this.respPos + this.respLen) % FIFO_SIZE] = bytes[i] & 0xFF;
-      this.respLen += 1;
-    }
-  }
-
-  private respondAck(bytes: Array<number>): void {
-    this.pushResponse(bytes);
-    this.setInt(INT3_ACK);
-  }
-
-  private respondError(): void {
-    this.errLatch = true;
-    this.pushResponse([this.driveStat() | ST_ERROR]);
-    this.setInt(INT5_ERROR);
-  }
-
-  private respondLater(mask: number, cycles: number, bytes: Array<number>): void {
-    this.secondHandle = this.sched.at(cycles, () => {
-      this.secondHandle = null;
-      this.pushResponse(bytes);
-      this.setInt(mask);
+    this.firstHandle = this.sched.at(id === 0x0A || id === 0x1E ? INIT_FIRST_CYCLES : FIRST_RESPONSE_CYCLES, () => {
+      this.firstHandle = null;
+      this.errLatch = false;
+      this.runCommand(id, argc);
     });
   }
 
-  private driveStat(): number {
-    let s = ST_MOTOR;
-    if (this.reading) {
-      s |= ST_READING;
-    }
-    if (this.seeking) {
-      s |= ST_SEEKING;
-    }
-    if (this.errLatch) {
-      s |= ST_ERROR;
-    }
-
-    return s;
-  }
-
-  private msfToLba(min: number, sec: number, frame: number): number {
-    return min * 60 * 75 + sec * 75 + frame - 150;
-  }
-
   private runCommand(id: number, argc: number): void {
-    const p0 = argc > 0 ? this.cmdParams[0] : 0;
-    const p1 = argc > 1 ? this.cmdParams[1] : 0;
-    const p2 = argc > 2 ? this.cmdParams[2] : 0;
+    const need = (n: number): boolean => {
+      if (argc < n) {
+        this.respondError(ERR_WRONG_PARAMS);
+
+        return true;
+      }
+
+      return false;
+    };
 
     switch (id) {
       case 0x01:
         this.respondAck([this.driveStat()]);
 
         return;
-      case 0x0E:
-        this.commandSetLoc(p0, p1, p2);
+      case 0x02:
+        if (need(3)) {
+          return;
+        }
+        this.commandSetLoc();
         this.respondAck([this.driveStat()]);
 
         return;
+      case 0x03:
+      case 0x04:
+      case 0x05:
+        this.respondAck([this.driveStat()]);
+        this.respondSecond(4, FIRST_RESPONSE_CYCLES, (): Array<number> => [this.driveStat()]);
+
+        return;
       case 0x06:
+      case 0x1B:
         this.commandRead();
         this.respondAck([this.driveStat()]);
 
         return;
+      case 0x07:
+        if (this.spindleOff) {
+          this.spindleOff = false;
+          this.respondAck([this.driveStat()]);
+          this.respondSecond(2, MOTORON_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
+        } else {
+          this.respondError(ERR_WRONG_PARAMS);
+        }
+
+        return;
       case 0x08:
-        this.haltRead();
-        this.respondAck([this.driveStat()]);
-        this.respondLater(INT2_COMPLETE, COMMAND_SECOND_CYCLES, [this.driveStat()]);
+        this.reading = false;
+        this.respondAck([this.driveStat() & ~ST_READING]);
+        this.respondSecond(2, STOP_SECOND_CYCLES, (): Array<number> => {
+          this.spindleOff = true;
+          this.snapToSector(0);
+
+          return [this.driveStat()];
+        });
 
         return;
       case 0x09:
-        this.haltRead();
         this.respondAck([this.driveStat()]);
-        this.respondLater(INT2_COMPLETE, COMMAND_SECOND_CYCLES, [this.driveStat()]);
+        this.reading = false;
+        this.respondSecond(2, PAUSE_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
 
         return;
       case 0x0A:
         this.commandInit();
         this.respondAck([this.driveStat()]);
-        this.respondLater(INT2_COMPLETE, COMMAND_SECOND_CYCLES, [this.driveStat()]);
+        this.respondSecond(2, INIT_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
 
         return;
       case 0x0B:
@@ -420,14 +572,24 @@ export class Cdrom implements CdromUnit {
 
         return;
       case 0x0D:
-        this.filterFile = p0;
-        this.filterChan = p1;
-        this.filterOn = p0 !== 0 || p1 !== 0;
+        if (need(2)) {
+          return;
+        }
+        this.filterFile = this.cmdParams[0];
+        this.filterChan = this.cmdParams[1];
+        this.respondAck([this.driveStat()]);
+
+        return;
+      case 0x0E:
+        if (need(1)) {
+          return;
+        }
+        this.modeByte = this.cmdParams[0] & 0xFF;
         this.respondAck([this.driveStat()]);
 
         return;
       case 0x0F:
-        this.respondAck([this.driveStat(), this.modeByte, this.filterFile, this.filterChan]);
+        this.respondAck([this.driveStat(), this.modeByte, 0, this.filterFile, this.filterChan]);
 
         return;
       case 0x10:
@@ -439,52 +601,80 @@ export class Cdrom implements CdromUnit {
 
         return;
       case 0x12:
-      case 0x16:
+        if (need(1)) {
+          return;
+        }
         this.respondAck([this.driveStat()]);
-        this.respondLater(INT2_COMPLETE, COMMAND_SECOND_CYCLES, [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        this.respondSecond(2, SETSESSION_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
+
+        return;
+      case 0x13:
+        this.respondAck([this.driveStat(), 0x01, 0x01]);
 
         return;
       case 0x14:
-      case 0x19:
-        this.runTest(p0);
+        if (need(1)) {
+          return;
+        }
+        if (bcdByte(this.cmdParams[0]) !== 1) {
+          this.respondError(ERR_INVALID_PARAM);
+
+          return;
+        }
+        this.respondAck([this.driveStat(), 0x00, 0x02]);
 
         return;
       case 0x15:
-      case 0x1A:
-        this.respondAck([this.driveStat()]);
-        this.respondLater(INT2_COMPLETE, COMMAND_SECOND_CYCLES, [0xFF, 0x53, 0x43, 0x45, 0x41]);
-
-        return;
-      case 0x17:
+      case 0x16:
         this.commandSeek();
         this.respondAck([this.driveStat()]);
 
         return;
+      case 0x19:
+        this.runTest(argc);
+
+        return;
+      case 0x1A:
+        this.respondAck([this.driveStat()]);
+        this.respondSecond(2, GETID_SECOND_CYCLES, (): Array<number> => [0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x41]);
+
+        return;
+      case 0x1C:
+        this.commandInit();
+        this.respondAck([this.driveStat()]);
+
+        return;
+      case 0x1D:
+        if (need(2)) {
+          return;
+        }
+        this.respondAck([this.driveStat()]);
+        this.respondSecond(2, FIRST_RESPONSE_CYCLES, (): Array<number> => this.buildSubQ());
+
+        return;
+      case 0x1E:
+        this.commandInit();
+        this.respondAck([this.driveStat()]);
+        this.respondSecond(2, READTOC_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
+
+        return;
       default:
-        this.respondError();
+        this.respondError(ERR_INVALID_COMMAND);
     }
   }
 
-  private runTest(sub: number): void {
-    if (sub === 0x20) {
-      this.respondAck([0x94, 0x03, 0x1F]);
-
-      return;
-    }
-    this.respondError();
-  }
-
-  private commandSetLoc(p0: number, p1: number, p2: number): void {
-    const min = bcdByte(p0);
-    const sec = bcdByte(p1);
-    const frame = bcdByte(p2);
-    const lba = this.msfToLba(min, sec, frame);
+  private commandSetLoc(): void {
+    const min = bcdByte(this.cmdParams[0]);
+    const sec = bcdByte(this.cmdParams[1]);
+    const frame = bcdByte(this.cmdParams[2]);
+    const lba = msfToLba(min, sec, frame);
     if (lba < 0 || lba >= this.image.totalSectors) {
       this.log.warn('cdrom', `setloc to invalid msf ${min}:${sec}:${frame}`);
 
       return;
     }
     this.seekTarget = lba;
+    this.locDirty = true;
   }
 
   private commandRead(): void {
@@ -493,27 +683,27 @@ export class Cdrom implements CdromUnit {
       this.seekHandle = null;
     }
     this.seeking = false;
-    this.reading = true;
-    this.nextSectorLba = this.seekTarget;
-    const catchUp = this.seekTarget === cacheLba(this.locCache) ? CD_SECTOR_CYCLES : SEEK_CYCLES;
-    this.sectorTimer = CD_SECTOR_CYCLES - catchUp;
-  }
-
-  private haltRead(): void {
-    if (this.seekHandle !== null) {
-      this.sched.cancel(this.seekHandle);
-      this.seekHandle = null;
+    this.spindleOff = false;
+    const period = this.sectorPeriod();
+    if (this.locDirty) {
+      this.locDirty = false;
+      this.nextSectorLba = this.seekTarget;
+      const catchUp = this.seekTarget === this.cacheLba() ? period : SEEK_CYCLES;
+      this.sectorTimer = period - catchUp;
+    } else {
+      this.nextSectorLba = Math.max(0, this.nextSectorLba - 1);
+      this.sectorTimer = 0;
     }
-    this.reading = false;
-    this.seeking = false;
-    this.sectorTimer = 0;
+    this.reading = true;
   }
 
   private commandSeek(): void {
-    this.haltRead();
-    const target = this.seekTarget;
+    this.reading = false;
+    this.locDirty = false;
+    this.spindleOff = false;
     this.seeking = true;
-    const latency = target === cacheLba(this.locCache) ? COMMAND_SECOND_CYCLES : SEEK_CYCLES;
+    const target = this.seekTarget;
+    const latency = target === this.cacheLba() ? FIRST_RESPONSE_CYCLES : SEEK_CYCLES;
     this.seekHandle = this.sched.at(latency, () => {
       this.seekHandle = null;
       this.finishSeek(target);
@@ -522,25 +712,142 @@ export class Cdrom implements CdromUnit {
 
   private finishSeek(target: number): void {
     this.seeking = false;
-    if (this.image.readRawSectors(target, 1, this.xaRaw)) {
-      this.locCache.set(this.xaRaw.subarray(HEADER_OFFSET, HEADER_OFFSET + HEADER_SIZE), 0);
-    } else {
-      this.log.warn('cdrom', `seek to invalid target lba ${target}`);
-    }
-    this.pushResponse([this.driveStat()]);
-    this.setInt(INT4_READY);
+    this.snapToSector(target);
+    this.respondOne(this.driveStat(), 2);
   }
 
   private commandInit(): void {
-    this.haltRead();
+    if (this.seekHandle !== null) {
+      this.sched.cancel(this.seekHandle);
+      this.seekHandle = null;
+    }
+    this.reading = false;
+    this.seeking = false;
+    this.spindleOff = false;
     this.dataPending = false;
+    this.dataDone = false;
     this.dataIdx = 0;
-    this.modeByte = 0;
-    this.filterOn = false;
+    this.modeByte = 0x20;
     this.filterFile = 0;
     this.filterChan = 0;
     this.muted = false;
     this.errLatch = false;
+    this.locDirty = false;
+    this.sectorTimer = 0;
+  }
+
+  private runTest(argc: number): void {
+    if (argc === 0) {
+      this.respondError(ERR_INVALID_PARAM);
+
+      return;
+    }
+    const sub = this.cmdParams[0] & 0xFF;
+    switch (sub) {
+      case 0x01:
+      case 0x02:
+      case 0x03:
+      case 0x04:
+      case 0x10:
+      case 0x11:
+      case 0x12:
+      case 0x13:
+      case 0x14:
+      case 0x15:
+      case 0x16:
+      case 0x17:
+      case 0x18:
+      case 0x19:
+        this.respondAck([this.driveStat()]);
+
+        return;
+      case 0x05:
+        this.respondAck([0x00, 0x00]);
+
+        return;
+      case 0x20:
+        this.respondAck([0x94, 0x03, 0x1F, 0xC0]);
+
+        return;
+      case 0x21:
+        this.respondAck([0x00]);
+
+        return;
+      case 0x22:
+        this.respondAck([0x66, 0x6F, 0x72, 0x20, 0x55]);
+
+        return;
+      case 0x23:
+      case 0x24:
+      case 0x25:
+        this.respondAck([0x43, 0x58, 0x44, sub]);
+
+        return;
+      default:
+        if (sub >= 0x30 && sub <= 0x4F) {
+          this.respondError(ERR_INVALID_PARAM);
+
+          return;
+        }
+        if (argc > 1) {
+          this.respondError(ERR_WRONG_PARAMS);
+
+          return;
+        }
+        this.respondError(ERR_INVALID_PARAM);
+    }
+  }
+
+  // ---- subchannel / loc reports ----
+
+  private buildLocL(): Array<number> {
+    const c = this.locCache;
+
+    return [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]];
+  }
+
+  private buildLocP(): Array<number> {
+    const rel = Math.max(0, this.cacheLba());
+    const abs = rel + 150;
+    const relM = Math.floor(rel / 4500);
+    const relS = Math.floor((rel - relM * 4500) / 75);
+    const relF = rel - relM * 4500 - relS * 75;
+    const absM = Math.floor(abs / 4500);
+    const absS = Math.floor((abs - absM * 4500) / 75);
+    const absF = abs - absM * 4500 - absS * 75;
+
+    return [
+      0x01,
+      0x01,
+      toBcd(relM),
+      toBcd(relS),
+      toBcd(relF),
+      toBcd(absM),
+      toBcd(absS),
+      toBcd(absF),
+    ];
+  }
+
+  private buildSubQ(): Array<number> {
+    const rel = Math.max(0, this.cacheLba());
+    const abs = rel + 150;
+    const absM = Math.floor(abs / 4500);
+    const absS = Math.floor((abs - absM * 4500) / 75);
+    const absF = abs - absM * 4500 - absS * 75;
+
+    return [
+      0x01,
+      0x01,
+      0x01,
+      toBcd(absM),
+      toBcd(absS),
+      toBcd(absF),
+      toBcd(absM),
+      toBcd(absS),
+      toBcd(absF),
+      0x00,
+      0x00,
+    ];
   }
 
   // ---- sector delivery (tick is the drive clock) ----
@@ -550,8 +857,9 @@ export class Cdrom implements CdromUnit {
       return;
     }
     this.sectorTimer += cycles;
-    while (this.sectorTimer >= CD_SECTOR_CYCLES) {
-      this.sectorTimer -= CD_SECTOR_CYCLES;
+    const period = this.sectorPeriod();
+    while (this.sectorTimer >= period) {
+      this.sectorTimer -= period;
       this.deliverNextSector();
     }
   }
@@ -560,9 +868,9 @@ export class Cdrom implements CdromUnit {
     const lba = this.nextSectorLba;
     if (lba >= this.image.totalSectors || !this.image.readRawSectors(lba, 1, this.xaRaw)) {
       this.log.warn('cdrom', `read reached end of disc at lba ${lba}`);
-      this.haltRead();
-      this.pushResponse([this.driveStat()]);
-      this.setInt(INT4_READY);
+      this.reading = false;
+      this.sectorTimer = 0;
+      this.respondOne(this.driveStat(), 4);
 
       return;
     }
@@ -570,7 +878,6 @@ export class Cdrom implements CdromUnit {
     this.routeSector();
   }
 
-  // Test seam: behaves exactly like one sector delivered by the drive.
   deliverSector(raw: Uint8Array): void {
     this.xaRaw.set(raw.subarray(0, RAW_SECTOR_SIZE));
     this.routeSector();
@@ -579,56 +886,69 @@ export class Cdrom implements CdromUnit {
   private routeSector(): void {
     const raw = this.xaRaw;
     this.locCache.set(raw.subarray(HEADER_OFFSET, HEADER_OFFSET + HEADER_SIZE), 0);
-    if (raw[15] !== 2) {
-      return;
-    }
+    const mode = raw[15];
     const submode = raw[18];
-    if ((submode & SUBMODE_AUDIO) !== 0) {
-      if (this.muted) {
-        return;
-      }
-      if (this.filterOn && !(raw[16] === this.filterFile && raw[17] === this.filterChan)) {
-        return;
-      }
-      const subhead = ((raw[16] << 24) | (raw[17] << 16) | (raw[18] << 8) | raw[19]) >>> 0;
-      this.spu.xaSink.xaSector(raw[17], subhead, raw.subarray(USER_DATA_OFFSET, USER_DATA_OFFSET + XA_PAYLOAD_SIZE));
-
+    if (mode === 0) {
       return;
     }
-    this.dataBuf.set(raw.subarray(USER_DATA_OFFSET, USER_DATA_OFFSET + USER_DATA_SIZE), 0);
+    if (mode === 2 && (submode & SUBMODE_AUDIO) !== 0 && (submode & SUBMODE_REALTIME) !== 0) {
+      const filterActive = (this.modeByte & 0x08) !== 0;
+      const filterMatch = raw[16] === this.filterFile && raw[17] === this.filterChan;
+      const xaEnabled = (this.modeByte & 0x40) !== 0;
+      if (xaEnabled && (!filterActive || filterMatch)) {
+        if (!this.muted) {
+          const subhead = ((raw[16] << 24) | (raw[17] << 16) | (raw[18] << 8) | raw[19]) >>> 0;
+          this.spu.xaSink.xaSector(raw[17], subhead, raw.subarray(USER_DATA_OFFSET, USER_DATA_OFFSET + XA_PAYLOAD_SIZE));
+        }
+
+        return;
+      }
+      if (filterActive) {
+        return;
+      }
+    }
+    this.stageDataFifo();
+    this.respondOne(this.driveStat(), 1);
+  }
+
+  private stageDataFifo(): void {
+    if (this.xaRaw[15] === 0) {
+      return;
+    }
+    if ((this.modeByte & 0x20) !== 0) {
+      this.dataBuf.set(this.xaRaw.subarray(HEADER_OFFSET, RAW_SECTOR_SIZE), 0);
+      this.dataLen = RAW_MINUS_SYNC_SIZE;
+    } else if (this.xaRaw[15] === 1) {
+      this.dataBuf.set(this.xaRaw.subarray(HEADER_SIZE, HEADER_SIZE + USER_DATA_SIZE), 0);
+      this.dataLen = USER_DATA_SIZE;
+    } else {
+      this.dataBuf.set(this.xaRaw.subarray(USER_DATA_OFFSET, USER_DATA_OFFSET + USER_DATA_SIZE), 0);
+      this.dataLen = USER_DATA_SIZE;
+    }
     this.dataPending = true;
+    this.dataDone = false;
     this.dataIdx = 0;
-    this.pushResponse([this.driveStat()]);
-    this.setInt(INT1_DATA);
   }
 
-  // ---- GetlocL / GetlocP responses ----
+  // ---- data fifo readout ----
 
-  private buildLocL(): Array<number> {
-    return [
-      this.locCache[0], this.locCache[1], this.locCache[2], this.locCache[3],
-      this.locCache[4], this.locCache[5], this.locCache[6], this.locCache[7],
-      this.locCache[8], this.locCache[9], this.locCache[10], this.locCache[11],
-    ];
-  }
+  private popDataByte(): number {
+    if (!this.dataPending) {
+      return 0;
+    }
+    if (this.dataDone) {
+      const pad = this.dataLen === RAW_MINUS_SYNC_SIZE ? this.dataLen - 4 : this.dataLen - 8;
 
-  private buildLocP(): Array<number> {
-    const clamped = Math.max(0, cacheLba(this.locCache));
-    const abs = clamped + 150;
-    return [
-      0x01,
-      0x01,
-      toBcd(Math.floor(clamped / 4500)),
-      toBcd(Math.floor((clamped - Math.floor(clamped / 4500) * 4500) / 75)),
-      toBcd(clamped - Math.floor(clamped / 4500) * 4500 - Math.floor((clamped - Math.floor(clamped / 4500) * 4500) / 75) * 75),
-      toBcd(Math.floor(abs / 4500)),
-      toBcd(Math.floor((abs - Math.floor(abs / 4500) * 4500) / 75)),
-      toBcd(abs - Math.floor(abs / 4500) * 4500 - Math.floor((abs - Math.floor(abs / 4500) * 4500) / 75) * 75),
-      0,
-      0,
-      0,
-      0,
-    ];
+      return this.dataBuf[pad];
+    }
+    const v = this.dataBuf[this.dataIdx];
+    this.dataIdx += 1;
+    if (this.dataIdx >= this.dataLen) {
+      this.dataDone = true;
+      this.dataIdx = 0;
+    }
+
+    return v;
   }
 
   // ---- DMA (channel 3, toRam) ----
@@ -638,9 +958,10 @@ export class Cdrom implements CdromUnit {
       return;
     }
     if (config.direction === 'toRam' && this.dataPending && config.wordsPerBlock > 0) {
-      const bytes = Math.min(config.wordsPerBlock * 4, USER_DATA_SIZE);
+      const bytes = Math.min(config.wordsPerBlock * 4, this.dataLen);
       this.spreadWrite(ram, config.base, this.dataBuf, 0, bytes);
       this.dataPending = false;
+      this.dataDone = false;
       this.dataIdx = 0;
     }
     this.irq.dmaDone(3);

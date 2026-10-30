@@ -153,6 +153,9 @@ export class PsxSystem implements System {
     });
     this.irq.sink = (line) => this.bus.raiseIrq(line);
     this.irq.dmaDoneSink = (ch) => this.bus.dmaChannelDone(ch);
+    this.bios.padInput = this.pad;
+    this.bios.hwRead32 = (addr) => this.bus.load32(addr);
+    this.bios.hwWrite32 = (addr, value) => this.bus.store32(addr, value);
     this.cpu = new CpuR3000A({
       bus: this.bus,
       gte: this.gte,
@@ -171,9 +174,17 @@ export class PsxSystem implements System {
 
   boot(): void {
     const info = this.bios.boot();
+    this.bios.applyMemoryControl();
     this.cpu.reset(info.entryPc);
     this.cpu.setReg(29, info.sp);
     this.cpu.setReg(28, info.gp);
+    this.cpu.setReg(4, 1);
+    this.cpu.setReg(5, 0);
+    this.cpu.setReg(7, 0x2a);
+    this.cpu.setReg(8, info.sp);
+    this.cpu.setReg(30, info.sp);
+    this.cpu.setReg(11, info.entryPc);
+    this.cpu.setReg(15, 0x1f801800);
     this.installClock();
   }
 
@@ -197,8 +208,13 @@ export class PsxSystem implements System {
     let remaining = cycles;
     while (remaining > 0) {
       const next = this.sched.nextDeadline();
-      const untilEvent = next === null ? remaining : next - this.sched.now;
-      const budget = Math.min(Math.max(1, untilEvent), CPU_BURST_MAX, remaining);
+      const untilEvent = next === null ? remaining : Math.max(1, Math.min(next - this.sched.now, remaining));
+      const budget = Math.min(untilEvent, CPU_BURST_MAX, remaining);
+      if (this.cpu.halted) {
+        this.sched.advance(untilEvent);
+        remaining -= untilEvent;
+        continue;
+      }
       const consumed = this.cpu.run(budget);
       this.sched.advance(consumed);
       remaining -= consumed;
