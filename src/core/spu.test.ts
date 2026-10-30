@@ -14,7 +14,7 @@ interface TestEvent {
 }
 
 class TestScheduler implements Scheduler {
-  private _now = 0;
+  constructor(private _now = 0) {}
   private readonly events: Array<TestEvent> = [];
 
   get now(): number {
@@ -669,4 +669,17 @@ test('noise mode voices output noise level', () => {
   const s = stats(dst);
   expect(s.n).toBeGreaterThan(1000);
   expect(s.peak).toBeGreaterThan(0.001);
+});
+
+test('sample clock keeps ticking past 2^31 cycles (about 63 s of emulated time)', () => {
+  const sched = new TestScheduler(0x7FFF_0000);
+  const spu = new SpuCore(sched, new RingLogger(), new IrqRouter());
+  const before = spu.sink.availableFrames;
+  let advanced = 0;
+  for (let i = 0; i < 200 && advanced < 0x2_0000; i++) {
+    sched.advance(0x1000);
+    advanced += 0x1000;
+  }
+  expect(sched.now).toBeGreaterThan(0x8000_0000);
+  expect(spu.sink.availableFrames - before).toBeGreaterThan(0x1_0000 / 768);
 });

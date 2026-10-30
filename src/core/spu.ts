@@ -235,7 +235,7 @@ export class SpuCore implements Spu {
     let nextDue = sched.now + SPU_SAMPLE_CYCLES;
     const tickCb = (): void => {
       self.tick(SPU_SAMPLE_CYCLES);
-      nextDue = (nextDue + SPU_SAMPLE_CYCLES) | 0;
+      nextDue += SPU_SAMPLE_CYCLES;
       const from = nextDue - sched.now;
       sched.at(from > 0 ? from : 0, tickCb);
     };
