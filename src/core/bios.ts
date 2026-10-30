@@ -2,6 +2,7 @@ import type {
   Bios,
   BootInfo,
   CdromUnit,
+  CpuContext,
   CpuExceptionKind,
   CpuRegAccess,
   Iso9660,
@@ -33,6 +34,7 @@ import {
   C_SENTINEL_COUNT,
   C_SENTINEL_STRIDE,
   CMDLINE_ADDR,
+  PCB_ADDR,
   DEFINT_LINE_CLASS,
   DEFINT_SPEC,
   EV_CLASS_CDROM,
@@ -123,6 +125,8 @@ export class HleBios implements Bios {
   private confStack = 0;
   private bump = HEAP_BASE;
   private readonly tcbStatus: Array<number> = [0x4000];
+  private readonly threadContexts: Array<CpuContext | null> = [null];
+  private currentThread = 0;
   private padBuf1 = 0;
   private padBuf2 = 0;
   private padOn = false;
@@ -293,8 +297,12 @@ export class HleBios implements Bios {
       this.events.rebuild(evcb);
       this.tcbStatus.length = 0;
       this.tcbStatus.push(0x4000);
+      this.threadContexts.length = 0;
+      this.threadContexts.push(null);
+      this.currentThread = 0;
       for (let i = 1; i < tcb; i++) {
         this.tcbStatus.push(TCB_STATUS_FREE);
+        this.threadContexts.push(null);
       }
       writeKernelImage(this.ram, { evcbCount: evcb, tcbCount: tcb });
       this.files.remirrorAll();
@@ -1316,9 +1324,7 @@ export class HleBios implements Bios {
       return this.closeThread(core);
     }
     if (fn === 0x10) {
-      this.log.debug('bios', 'ChangeThread no-op (single-thread kernel)');
-
-      return this.ret(core, 1);
+      return this.changeThread(core, this.a0(core) & 0xFFFF);
     }
 
     return this.unknown(core, 'B', fn);
@@ -1391,12 +1397,53 @@ export class HleBios implements Bios {
       if (this.tcbStatus[i] === TCB_STATUS_FREE) {
         this.tcbStatus[i] = 0x4000;
         ramWriteWord(this.ram, TCB_ADDR + i * TCB_SIZE, 0x4000);
+        this.threadContexts[i] = this.newThreadContext(core);
 
         return this.ret(core, (0xFF00_0000 | i) >>> 0);
       }
     }
 
     return this.ret(core, 0xFFFF_FFFF);
+  }
+
+  private newThreadContext(core: CpuRegAccess): CpuContext {
+    const ctx = core.save();
+    const entry = this.a0(core);
+    const stack = this.a1(core);
+    ctx.pc = entry;
+    ctx.nextPc = (entry + 4) >>> 0;
+    ctx.regs[28] = this.a2(core);
+    ctx.regs[29] = stack;
+    ctx.regs[30] = stack;
+    ctx.regs[31] = 0;
+    ctx.branchDelay = false;
+
+    return ctx;
+  }
+
+  private changeThread(core: CpuRegAccess, target: number): boolean {
+    const next = this.threadContexts[target];
+    if (target === this.currentThread || next === undefined || next === null || this.tcbStatus[target] !== 0x4000) {
+      return this.ret(core, 1);
+    }
+    if (this.runner.depth > 0) {
+      this.log.warn('bios', 'ChangeThread inside exception context ignored');
+
+      return this.ret(core, 1);
+    }
+    const caller = core.save();
+    const resume = caller.regs[31] >>> 0;
+    caller.pc = resume;
+    caller.nextPc = (resume + 4) >>> 0;
+    caller.regs[2] = 1;
+    this.threadContexts[this.currentThread] = caller;
+    this.threadContexts[target] = null;
+    this.currentThread = target;
+    ramWriteWord(this.ram, PCB_ADDR, TCB_ADDR + target * TCB_SIZE);
+    next.sr = caller.sr;
+    core.restore(next);
+
+    return true;
   }
 
   private closeThread(core: CpuRegAccess): boolean {
