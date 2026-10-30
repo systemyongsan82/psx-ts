@@ -114,7 +114,7 @@ function normalize(path: string): string {
     .replace(/^\S+?:/, '')
     .replace(/[\\/]+/g, '/')
     .replace(/;.*$/, '')
-    .replace(/\/+$/, '')
+    .replace(/^\/+|\/+$/g, '')
     .toLowerCase();
 }
 
