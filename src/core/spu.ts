@@ -948,15 +948,17 @@ export class SpuCore implements Spu {
   }
 
   private fifoPush(value: number): void {
+    if (((this.spucnt >>> 4) & 3) === 1) {
+      this.writeSpuRamHalf(value);
+
+      return;
+    }
     if (this.fifoCount >= FIFO_HALFWORDS) {
       return;
     }
 
     this.fifo[this.fifoCount] = value;
     this.fifoCount++;
-    if (((this.spucnt >>> 4) & 3) === 1) {
-      this.writeSpuRamHalf(value);
-    }
   }
 
   private writeSpuCnt(value: number): void {
@@ -972,7 +974,8 @@ export class SpuCore implements Spu {
         this.vLevel[v] = 0;
         this.vWait[v] = 0;
       }
-    } else if (nowMode === 1 && prevMode !== 1 && this.fifoCount > 0) {
+    }
+    if (nowMode === 1 && prevMode !== 1 && this.fifoCount > 0) {
       this.fifoFlush();
     }
   }
