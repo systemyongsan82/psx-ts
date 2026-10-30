@@ -466,7 +466,7 @@ function linkedConfig(base: number): DmaConfig {
     base: base,
     wordsPerBlock: 0,
     blockCount: 0,
-    step: 1,
+    step: 4,
     direction: 'toDevice',
     mode: 'linked',
     chopper: false,
@@ -536,7 +536,7 @@ test('dma2 continuous mode feeds gp0 words and records completion', () => {
     base: 0x3000,
     wordsPerBlock: 4,
     blockCount: 1,
-    step: 1,
+    step: 4,
     direction: 'toDevice',
     mode: 'manual',
     chopper: false,
@@ -544,6 +544,27 @@ test('dma2 continuous mode feeds gp0 words and records completion', () => {
   }, ram);
   expect(px(gpu, 0, 0)).toBe(0x001f);
   expect(done).toEqual([2]);
+});
+
+test('dma2 to gpu feeds consecutive ram words into a cpu-to-vram upload', () => {
+  const gpu = make();
+  const ram = new Uint32Array(0x0008_0000);
+  const upload = [0xa0_000000, vertex(0, 0), (2 << 16) | 4, 0x2222_1111, 0x4444_3333, 0x6666_5555, 0x8888_7777];
+  for (let i = 0; i < upload.length; i++) {
+    ram[(0x5000 >> 2) + i] = upload[i] >>> 0;
+  }
+  gpu.dmaStart(GPU_DMA_CHANNEL, {
+    base: 0x5000,
+    wordsPerBlock: upload.length,
+    blockCount: 1,
+    step: 4,
+    direction: 'toDevice',
+    mode: 'manual',
+    chopper: false,
+    enable: true,
+  }, ram);
+  expect([px(gpu, 0, 0), px(gpu, 1, 0), px(gpu, 2, 0), px(gpu, 3, 0)]).toEqual([0x1111, 0x2222, 0x3333, 0x4444]);
+  expect([px(gpu, 0, 1), px(gpu, 1, 1), px(gpu, 2, 1), px(gpu, 3, 1)]).toEqual([0x5555, 0x6666, 0x7777, 0x8888]);
 });
 
 test('dma2 from gpu drains a pending vram read into ram', () => {
@@ -558,7 +579,7 @@ test('dma2 from gpu drains a pending vram read into ram', () => {
     base: 0x4000,
     wordsPerBlock: 2,
     blockCount: 1,
-    step: 1,
+    step: 4,
     direction: 'toRam',
     mode: 'manual',
     chopper: false,

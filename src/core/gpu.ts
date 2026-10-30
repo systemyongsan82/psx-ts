@@ -252,11 +252,12 @@ export class GpuCore implements Gpu {
   }
 
   private dmaToGpu(config: DmaConfig, ram: Uint32Array): void {
-    const bytes = config.wordsPerBlock * config.blockCount;
+    const words = config.wordsPerBlock * config.blockCount;
+    const delta = config.step === 4 ? 1 : -1;
     let addr = (config.base >>> 2) & RAM_WORD_MASK;
-    for (let i = 0; i < bytes; i++) {
+    for (let i = 0; i < words; i++) {
       this.gp0(ram[addr]);
-      addr = (addr + config.step) & RAM_WORD_MASK;
+      addr = (addr + delta) & RAM_WORD_MASK;
     }
   }
 
