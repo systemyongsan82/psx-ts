@@ -956,11 +956,14 @@ export class Cdrom implements CdromUnit {
       return;
     }
     if (config.direction === 'toRam' && this.dataPending && config.wordsPerBlock > 0) {
-      const bytes = Math.min(config.wordsPerBlock * 4, this.dataLen);
-      this.spreadWrite(ram, config.base, this.dataBuf, 0, bytes);
-      this.dataPending = false;
-      this.dataDone = false;
-      this.dataIdx = 0;
+      const bytes = Math.min(config.wordsPerBlock * 4, this.dataLen - this.dataIdx);
+      this.spreadWrite(ram, config.base, this.dataBuf, this.dataIdx, bytes);
+      this.dataIdx += bytes;
+      if (this.dataIdx >= this.dataLen) {
+        this.dataPending = false;
+        this.dataDone = false;
+        this.dataIdx = 0;
+      }
     }
     this.irq.dmaDone(3);
   }
