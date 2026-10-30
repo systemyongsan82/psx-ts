@@ -2,7 +2,7 @@
 
 ## Disc
 
-- File: `Resident Evil (USA)/Resident Evil (USA).bin` + `.cue` (single track, MODE2/2352, 289,277 raw sectors, ~62.7 min).
+- File: `Resident Evil (USA)/Resident Evil (USA).bin` + `.cue` (single track, MODE2/2352, 289,277 raw sectors, ~64.3 min).
 - The `.cue` says INDEX 01 at 00:00:00 but the first synced header in the file reads MSF 00:02:00 — i.e. **file sector 0 IS PSX LBA 0** (`PsxBinImage` auto-detects `baseOffset=0`).
 - Sync pattern per sector: `00 FF FF FF FF FF FF FF FF FF FF 00`, MSF at offset 12, mode byte at 15, subheader (file/ch/submode/coding) at 16..19, user data at 24 (2048 bytes, Form1) or audio at 24 (2328 bytes, Form2).
 - Form2 usage on this disc: 41,842 sectors — essentially one giant XA-audio stream from raw 11430 to 269517 (~57 min; RE's continuous streamed music/ambience, seeked by the game). A few stray Form2 sectors near the start.
