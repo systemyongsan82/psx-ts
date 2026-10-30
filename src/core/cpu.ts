@@ -27,5 +27,5 @@ export class CpuR3000A implements Cpu {
 
   setReg(_index: number, _value: number): void {}
 
-  haltRequest(): void {}
+  readonly halted = false;
 }

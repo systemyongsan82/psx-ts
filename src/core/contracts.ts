@@ -110,8 +110,12 @@ export interface CpuRegAccess {
   setPc(value: number): void;
   readonly nextPc: number;
   setNextPc(value: number): void;
+  sr(): number;
+  setSr(value: number): void;
   save(): CpuContext;
   restore(ctx: CpuContext): void;
+  suspend(): void;
+  resume(): void;
 }
 
 export interface CpuHooks {
@@ -121,11 +125,7 @@ export interface CpuHooks {
 }
 
 export interface GteUnit {
-  exec(instr: number): void;
-  data(index: number): number;
-  setData(index: number, value: number): void;
-  ctl(index: number): number;
-  setCtl(index: number, value: number): void;
+  cop2(instr: number, gprValue: number): number;
 }
 
 export interface CpuDeps {
@@ -139,11 +139,11 @@ export interface Cpu {
   reset(entryPc: number): void;
   run(budget: number): number;
   readonly pc: number;
+  readonly halted: boolean;
   save(): CpuContext;
   restore(ctx: CpuContext): void;
   getReg(index: number): number;
   setReg(index: number, value: number): void;
-  haltRequest(): void;
 }
 
 export interface DisplayFrame {
