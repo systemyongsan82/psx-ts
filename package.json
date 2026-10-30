@@ -1,0 +1,22 @@
+{
+  "name": "re-macapp",
+  "version": "0.1.0",
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "headless": "bun src/harness/run.ts",
+    "serve": "bun run src/ui/server.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.6.0"
+  },
+  "targets": {
+    "browser": {
+      "output": "src/ui/web/bundle.js",
+      "entry": "src/ui/client.ts"
+    }
+  }
+}

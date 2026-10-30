@@ -1,0 +1,9 @@
+node_modules/
+dist/
+shots/
+*.log
+.DS_Store
+
+# disc images are huge and user-owned
+"Resident Evil (USA)"/
+saves/
