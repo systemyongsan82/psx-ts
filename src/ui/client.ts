@@ -42,6 +42,9 @@ function sendButtons(): void {
 
 for (const key of Object.keys(KEY_MAP)) {
   window.addEventListener('keydown', (e) => {
+    if (audioCtx.state === 'suspended') {
+      void audioCtx.resume();
+    }
     const target = KEY_MAP[e.code];
     if (target === undefined) {
       return;
@@ -94,9 +97,15 @@ function handleAudio(data: ArrayBuffer): void {
     void audioCtx.resume();
   }
   const samples = new Float32Array(data, view.byteOffset + 8, count * 2);
+  const left = new Float32Array(count);
+  const right = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    left[i] = samples[i * 2];
+    right[i] = samples[i * 2 + 1];
+  }
   const buf = audioCtx.createBuffer(2, count, 44100);
-  buf.copyToChannel(samples.subarray(0, count), 0);
-  buf.copyToChannel(samples.subarray(count, count * 2), 1);
+  buf.copyToChannel(left, 0);
+  buf.copyToChannel(right, 1);
   const source = audioCtx.createBufferSource();
   source.buffer = buf;
   const now = audioCtx.currentTime;

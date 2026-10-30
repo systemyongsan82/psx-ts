@@ -1,6 +1,7 @@
 import { serve, type ServerWebSocket } from 'bun';
 import { RingLogger } from '../core/logger';
 import { PsxSystem } from '../core/system';
+import { CPU_HZ, FRAME_CYCLES } from '../core/contracts';
 
 const FRAME_TAG = 0x46524d45;
 const AUDIO_TAG = 0x4155444f;
@@ -116,6 +117,23 @@ function tick(): void {
 let framesInSecond = 0;
 let fpsLast = performance.now();
 
-setInterval(tick, 16.67);
+const FRAME_MS = (FRAME_CYCLES / CPU_HZ) * 1000;
+const MAX_CATCH_UP_FRAMES = 3;
+let nextFrameAt = performance.now();
+
+function pace(): void {
+  const now = performance.now();
+  if (now - nextFrameAt > FRAME_MS * MAX_CATCH_UP_FRAMES) {
+    nextFrameAt = now;
+  }
+  let ran = 0;
+  while (nextFrameAt <= now && ran < MAX_CATCH_UP_FRAMES) {
+    tick();
+    nextFrameAt += FRAME_MS;
+    ran++;
+  }
+}
+
+setInterval(pace, 4);
 
 console.log(`serving http://localhost:${port} for ${binPath}`);

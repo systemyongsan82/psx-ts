@@ -232,6 +232,20 @@ describe('Bus DMA', () => {
     expect(bus.load16(IO + 0x70) & 8).toBe(8);
   });
 
+  it('a byte write to DICR bits 16-23 keeps the pending channel flags in bits 24-30', () => {
+    const { bus } = harness;
+    bus.store32(IO + 0xF0, 0x07654321 | (1 << 19));
+    bus.store32(IO + 0xF4, (1 << 20) | (1 << 23));
+    bus.store32(IO + 0xC0, 0x00001000);
+    bus.store32(IO + 0xC4, (1 << 16) | 16);
+    bus.store32(IO + 0xC8, 0x01000201);
+    expect(bus.load32(IO + 0xF4) >>> 24).toBe(0x90);
+    bus.store8(IO + 0xF6, 0x90);
+    expect(bus.load32(IO + 0xF4) >>> 24).toBe(0x90);
+    bus.store8(IO + 0xF7, 0x10);
+    expect(bus.load32(IO + 0xF4) >>> 24).toBe(0x00);
+  });
+
   it('sync-mode-0 to-RAM transfer accepts the kernel CD sequence shape and leaves MADR', () => {
     const { bus, ram, device } = harness;
     bus.store32(IO + 0xF0, 0x07654321 | 0x8000);

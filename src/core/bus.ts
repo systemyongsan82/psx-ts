@@ -1024,7 +1024,8 @@ export class Bus implements MemAccess {
     }
     if (off < 0xF8) {
       if ((off & 3) < 3) {
-        this.dicr = mergeByte(this.dicr, off & 3, byte, 0xFF_FFFF);
+        const shift = (off & 3) * 8;
+        this.dicr = ((this.dicr & ~(0xFF << shift)) | ((byte & 0xFF) << shift)) >>> 0;
         this.updateDmaSignal();
       } else {
         this.dicr = (this.dicr & ~((byte & 0x7F) << 24)) >>> 0;
