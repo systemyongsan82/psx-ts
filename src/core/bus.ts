@@ -36,6 +36,8 @@ export class Bus implements MemAccess {
 
   raiseIrq(_line: IrqLine): void {}
 
+  dmaChannelDone(_ch: number): void {}
+
   irqActive(): boolean {
     return false;
   }

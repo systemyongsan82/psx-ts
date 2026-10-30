@@ -79,6 +79,7 @@ export interface DmaDevice {
 
 export interface IrqController {
   raise(line: IrqLine): void;
+  dmaDone(channel: number): void;
 }
 
 export interface IoDevice {

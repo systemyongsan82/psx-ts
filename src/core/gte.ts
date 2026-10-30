@@ -5,5 +5,8 @@ export class Gte implements GteUnit {
     throw new Error('Gte under construction — CPU agent owns src/core/gte.ts');
   }
 
-  cop2(_instr: number): void {}
+  cop2(_instr: number, _gprValue: number): number {
+
+    return 0;
+  }
 }

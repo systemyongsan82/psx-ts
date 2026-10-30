@@ -152,6 +152,7 @@ export class PsxSystem implements System {
       pad: this.pad,
     });
     this.irq.sink = (line) => this.bus.raiseIrq(line);
+    this.irq.dmaDoneSink = (ch) => this.bus.dmaChannelDone(ch);
     this.cpu = new CpuR3000A({
       bus: this.bus,
       gte: this.gte,
