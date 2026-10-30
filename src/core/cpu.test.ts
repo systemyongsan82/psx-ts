@@ -615,3 +615,31 @@ describe('CpuR3000A perf floor', () => {
     expect(ms).toBeLessThan(8000);
   }, 30000);
 });
+describe('CpuR3000A load delay slot', () => {
+  test('an instruction in the load delay slot that writes the loaded register wins', () => {
+    const bus = new RamBus();
+    const cpu = new CpuR3000A(makeDeps(bus, { n: 0 }, [], []));
+    poke(bus, 0x300, 0x1234);
+    poke(bus, 0x200, itype(0x23, 0, 1, 0x300));
+    poke(bus, 0x204, itype(0x09, 0, 1, 5));
+    poke(bus, 0x208, NOP);
+    poke(bus, 0x20C, NOP);
+    cpu.reset(0x200);
+    cpu.run(40);
+    expect(cpu.getReg(1)).toBe(5);
+  });
+
+  test('the delay slot still reads the old register value', () => {
+    const bus = new RamBus();
+    const cpu = new CpuR3000A(makeDeps(bus, { n: 0 }, [], []));
+    poke(bus, 0x300, 0x1234);
+    poke(bus, 0x200, itype(0x09, 0, 1, 7));
+    poke(bus, 0x204, itype(0x23, 0, 1, 0x300));
+    poke(bus, 0x208, rtype(0x21, 1, 0, 2));
+    poke(bus, 0x20C, rtype(0x21, 1, 0, 3));
+    cpu.reset(0x200);
+    cpu.run(60);
+    expect(cpu.getReg(2)).toBe(7);
+    expect(cpu.getReg(3)).toBe(0x1234);
+  });
+});

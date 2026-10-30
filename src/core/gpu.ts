@@ -211,6 +211,14 @@ export class GpuCore implements Gpu {
     this.store32(addr, value & 0xff);
   }
 
+  private interlacedFrame(): boolean {
+    return this.interlace === 1 && this.vert480 === 1;
+  }
+
+  private skipsDrawLine(y: number): boolean {
+    return this.interlaceDraw === 0 && this.interlacedFrame() && (y & 1) === this.interlaceField;
+  }
+
   frameBoundary(): void {
     this.interlaceField ^= 1;
   }
@@ -312,6 +320,9 @@ export class GpuCore implements Gpu {
       stat |= GPUSTAT_FIFO_EMPTY;
     }
     stat |= (this.dmaDirection & 3) << 29;
+    if (this.interlacedFrame() && this.interlaceField === 1) {
+      stat |= 0x8000_0000;
+    }
 
     return stat >>> 0;
   }
@@ -908,10 +919,9 @@ export class GpuCore implements Gpu {
     const flatR = this.vr[i0] >> 3;
     const flatG = this.vg[i0] >> 3;
     const flatB = this.vb[i0] >> 3;
-    const interlaceSkip = this.interlaceDraw === 1;
 
     for (let y = rowStart; y <= rowEnd; y++) {
-      if (interlaceSkip && (y & 1) !== 0) {
+      if (this.skipsDrawLine(y)) {
         continue;
       }
       const other = y < yMid ? 1 : 2;
@@ -1170,7 +1180,7 @@ export class GpuCore implements Gpu {
     if (x < this.areaX1 || x > this.areaX2 || y < this.areaY1 || y > this.areaY2) {
       return;
     }
-    if (this.interlaceDraw === 1 && (y & 1) !== 0) {
+    if (this.skipsDrawLine(y)) {
       return;
     }
     const dith = ditherOn ? DITHER_OFFSETS[((y & 3) << 2) | (x & 3)] : 0;
@@ -1219,7 +1229,7 @@ export class GpuCore implements Gpu {
         if (y < areaY1 || y > areaY2) {
           continue;
         }
-        if (this.interlaceDraw === 1 && (y & 1) !== 0) {
+        if (this.skipsDrawLine(y)) {
           continue;
         }
         for (let col = 0; col < width; col++) {
@@ -1269,7 +1279,7 @@ export class GpuCore implements Gpu {
       if (y < areaY1 || y > areaY2) {
         continue;
       }
-      if (this.interlaceDraw === 1 && (y & 1) !== 0) {
+      if (this.skipsDrawLine(y)) {
         continue;
       }
       const ty = ((flipY ? (baseV - row) & 0xff : (baseV + row) & 0xff) & keepY) | setY;
@@ -1499,6 +1509,9 @@ export class GpuCore implements Gpu {
     let height = this.vertY2 - this.vertY1;
     if (height <= 0) {
       height = 240;
+    }
+    if (this.interlacedFrame()) {
+      height *= 2;
     }
     if (height > VRAM_H) {
       height = VRAM_H;

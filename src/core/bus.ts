@@ -374,8 +374,10 @@ export class Bus implements MemAccess {
   private imask = 0;
   private ramSize = 0x00000B88;
   private icache = 0;
+  private readonly rom: Uint8Array | null;
 
-  constructor(sched: Scheduler, log: Logger, ram: Uint32Array, devices: IoDeviceSet) {
+  constructor(sched: Scheduler, log: Logger, ram: Uint32Array, devices: IoDeviceSet, rom: Uint8Array | null = null) {
+    this.rom = rom;
     this.sched = sched;
     this.log = log;
     this.devices = devices;
@@ -644,6 +646,9 @@ export class Bus implements MemAccess {
         if (q < 0x1FC0_0000) {
           return openBus(size);
         }
+        if (this.rom !== null) {
+          return this.romLoad(q - 0x1FC0_0000, size);
+        }
 
         return 0;
       }
@@ -686,6 +691,19 @@ export class Bus implements MemAccess {
     if (q >= 0x1F80_2000 && q < 0x1F80_3000) {
       this.blobStore(this.exp2, this.exp2Bytes, 0xFFF, q - 0x1F80_2000, v, size);
     }
+  }
+
+  private romLoad(rel: number, size: Width): number {
+    const rom = this.rom;
+    if (rom === null) {
+      return 0;
+    }
+    let v = 0;
+    for (let k = 0; k < size; k++) {
+      v |= rom[(rel + k) & (rom.length - 1)] << (k * 8);
+    }
+
+    return v >>> 0;
   }
 
   private ramLoad(p: number, size: Width): number {

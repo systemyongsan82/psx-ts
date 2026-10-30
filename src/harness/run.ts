@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { RingLogger } from '../core/logger';
 import { PsxSystem } from '../core/system';
@@ -10,10 +10,11 @@ interface Args {
   shotEvery: number;
   logLines: number;
   binPath: string;
+  biosPath: string | null;
 }
 
 function parseArgs(argv: Array<string>): Args {
-  const args: Args = { frames: 600, outDir: 'shots', shotEvery: 60, logLines: 300, binPath: 'games/Resident Evil (USA)/Resident Evil (USA).bin' };
+  const args: Args = { frames: 600, outDir: 'shots', shotEvery: 60, logLines: 300, binPath: 'games/Resident Evil (USA)/Resident Evil (USA).bin', biosPath: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = (): string => {
@@ -29,6 +30,7 @@ function parseArgs(argv: Array<string>): Args {
     else if (a === '--shot-every') { args.shotEvery = Number(val()); }
     else if (a === '--log-lines') { args.logLines = Number(val()); }
     else if (a === '--bin') { args.binPath = val(); }
+    else if (a === '--bios') { args.biosPath = val(); }
   }
 
   return args;
@@ -40,7 +42,11 @@ export function main(): void {
   mkdirSync(args.outDir, { recursive: true });
 
   const started = performance.now();
-  const system = new PsxSystem({ binPath: args.binPath, cuePath: null, log });
+  const system = new PsxSystem(
+    args.biosPath === null
+      ? { binPath: args.binPath, cuePath: null, log }
+      : { binPath: args.binPath, cuePath: null, log, biosRom: new Uint8Array(readFileSync(args.biosPath)) },
+  );
   system.log.debug('sys', 'system constructed');
   system.boot();
 

@@ -728,3 +728,58 @@ test('2000 textured triangles rasterize within the frame budget', () => {
   console.log(`bench: 2000 textured triangles (${texels} texels) ${elapsed.toFixed(2)}ms`);
   expect(elapsed).toBeLessThan(500);
 });
+
+function enter480i(gpu: GpuCore): void {
+  gp1(gpu, 0x08_000027);
+  gp1(gpu, 0x07_000000 | (0x10 << 10) | 0x10);
+  gp1(gpu, 0x07_000000 | ((0x10 + 240) << 10) | 0x10);
+}
+
+test('480i with draw-to-display-field cleared skips the lines of the displayed field only', () => {
+  const gpu = make();
+  gp1(gpu, 0x08_000024 | 0x20);
+  gp0(gpu, [0xe1_000000]);
+  setArea(gpu, 0, 0, 63, 63);
+  const rect = (y: number): void => gp0(gpu, [0x60_0000ff, vertex(0, y), (1 << 16) | 8]);
+  for (let y = 0; y < 4; y++) {
+    rect(y);
+  }
+  const drawn = [0, 1, 2, 3].filter((y) => px(gpu, 0, y) !== 0);
+  expect(drawn.length).toBe(2);
+  expect(drawn[1] - drawn[0]).toBe(2);
+});
+
+test('480i draws every line when draw-to-display-field is set', () => {
+  const gpu = make();
+  gp1(gpu, 0x08_000024 | 0x20);
+  gp0(gpu, [0xe1_000400]);
+  setArea(gpu, 0, 0, 63, 63);
+  for (let y = 0; y < 4; y++) {
+    gp0(gpu, [0x60_0000ff, vertex(0, y), (1 << 16) | 8]);
+  }
+  expect([0, 1, 2, 3].every((y) => px(gpu, 0, y) !== 0)).toBe(true);
+});
+
+test('non-interlaced modes never skip lines whatever E1 bit 10 says', () => {
+  const gpu = make();
+  gp0(gpu, [0xe1_000000]);
+  setArea(gpu, 0, 0, 63, 63);
+  for (let y = 0; y < 4; y++) {
+    gp0(gpu, [0x60_0000ff, vertex(0, y), (1 << 16) | 8]);
+  }
+  expect([0, 1, 2, 3].every((y) => px(gpu, 0, y) !== 0)).toBe(true);
+});
+
+test('gpustat bit 31 toggles per frame only in 480i and presents the full field pair', () => {
+  const gpu = make();
+  enter480i(gpu);
+  const first = gpustat(gpu) >>> 31;
+  gpu.frameBoundary();
+  const second = gpustat(gpu) >>> 31;
+  expect(first).not.toBe(second);
+  expect(gpu.present().height).toBe(480);
+  const flat = make();
+  expect(gpustat(flat) >>> 31).toBe(0);
+  flat.frameBoundary();
+  expect(gpustat(flat) >>> 31).toBe(0);
+});

@@ -17,6 +17,33 @@ function sext16(v: number): number {
   return (v << 16) >> 16;
 }
 
+function destinationOf(primary: number, funct: number, rs: number, rt: number, rd: number): number {
+  if (primary === 0x00) {
+    if (funct <= 0x07 || funct === 0x09 || funct === 0x10 || funct === 0x12 || (funct >= 0x20 && funct <= 0x2B)) {
+      return rd;
+    }
+
+    return -1;
+  }
+  if (primary === 0x03) {
+    return 31;
+  }
+  if (primary === 0x01) {
+    return rt >= 0x10 ? 31 : -1;
+  }
+  if (primary >= 0x08 && primary <= 0x0F) {
+    return rt;
+  }
+  if (primary >= 0x20 && primary <= 0x26) {
+    return rt;
+  }
+  if ((primary === 0x10 || primary === 0x12) && (rs === 0x00 || (primary === 0x12 && rs === 0x02))) {
+    return rt;
+  }
+
+  return -1;
+}
+
 function exCodeOf(kind: CpuExceptionKind): number {
   switch (kind) {
     case 'interrupt':
@@ -70,12 +97,15 @@ export class CpuR3000A implements Cpu {
   private badVAddr = 0;
   private wasStub = false;
   private haltedFlag = false;
+  private readonly realExceptions: boolean;
+  private storesBlocked = false;
 
   constructor(deps: CpuDeps) {
     this.bus = deps.bus;
     this.gte = deps.gte;
     this.irqCheck = deps.irqCheck;
     this.hooks = deps.hooks;
+    this.realExceptions = deps.realExceptions === true;
     const self = this;
     const full: CoreAccessFull = {
       getReg: (index) => self.regs[index & 31] | 0,
@@ -101,6 +131,7 @@ export class CpuR3000A implements Cpu {
       sr: () => self.srV,
       setSr: (value) => {
         self.srV = value >>> 0;
+        self.syncCacheIsolation();
       },
       save: () => self.save(),
       restore: (ctx) => self.restore(ctx),
@@ -137,6 +168,7 @@ export class CpuR3000A implements Cpu {
     this.hiV = 0;
     this.loV = 0;
     this.srV = 0;
+    this.storesBlocked = false;
     this.causeV = 0;
     this.epcV = 0;
     this.badVAddr = 0;
@@ -169,7 +201,7 @@ export class CpuR3000A implements Cpu {
       this.loadReg1T = -1;
 
       const phys = (pc0 & 0x1FFFFFFF) >>> 0;
-      const inStub = phys === 0xA0 || phys === 0xB0 || phys === 0xC0 || phys === 0xD0;
+      const inStub = !this.realExceptions && (phys === 0xA0 || phys === 0xB0 || phys === 0xC0 || phys === 0xD0);
       if (inStub && !this.wasStub) {
         const nextBeforeHook = this.nextPcValue;
         const handled = this.hooks.kuserCall(pc0, this.core);
@@ -233,6 +265,9 @@ export class CpuR3000A implements Cpu {
         this.raise('breakpoint', instr, pc0, pc0, true);
 
         return consumed;
+      }
+      if (this.loadReg2T >= 0 && this.loadReg2T === destinationOf(primary, funct, rs, rt, rd)) {
+        this.loadReg2T = -1;
       }
       let cyc = 1;
       let taken = false;
@@ -563,6 +598,7 @@ export class CpuR3000A implements Cpu {
           if (((instr >>> 25) & 1) === 1) {
             if (funct === 0x10) {
               this.srV = ((this.srV & ~0xF) | ((this.srV >>> 2) & 0xF)) >>> 0;
+              this.syncCacheIsolation();
             }
             break;
           }
@@ -724,7 +760,9 @@ export class CpuR3000A implements Cpu {
         }
         case 0x28: {
           const addr = (regs[rs] + simm) | 0;
-          bus.store8(addr >>> 0, (regs[rt] | 0) & 0xFF);
+          if (!this.storesBlocked) {
+            bus.store8(addr >>> 0, (regs[rt] | 0) & 0xFF);
+          }
           cyc = 5;
           break;
         }
@@ -737,7 +775,9 @@ export class CpuR3000A implements Cpu {
 
             return consumed;
           }
-          bus.store16(addr >>> 0, (regs[rt] | 0) & 0xFFFF);
+          if (!this.storesBlocked) {
+            bus.store16(addr >>> 0, (regs[rt] | 0) & 0xFFFF);
+          }
           cyc = 5;
           break;
         }
@@ -746,6 +786,10 @@ export class CpuR3000A implements Cpu {
           const au = addr >>> 0;
           const o = au & 3;
           const base = (au & 0xFFFFFFFC) >>> 0;
+          if (this.storesBlocked) {
+            cyc = 5;
+            break;
+          }
           if (o === 3) {
             bus.store32(base, regs[rt] | 0);
           } else {
@@ -773,7 +817,9 @@ export class CpuR3000A implements Cpu {
 
             return consumed;
           }
-          bus.store32(addr >>> 0, regs[rt] | 0);
+          if (!this.storesBlocked) {
+            bus.store32(addr >>> 0, regs[rt] | 0);
+          }
           cyc = 5;
           break;
         }
@@ -781,6 +827,10 @@ export class CpuR3000A implements Cpu {
           const addr = (regs[rs] + simm) | 0;
           const au = addr >>> 0;
           const o = au & 3;
+          if (this.storesBlocked) {
+            cyc = 5;
+            break;
+          }
           if (o === 0) {
             bus.store32(au, regs[rt] | 0);
           } else {
@@ -823,7 +873,10 @@ export class CpuR3000A implements Cpu {
             return consumed;
           }
           cyc = 5;
-          bus.store32(addr >>> 0, this.gte.cop2(instr, 0) | 0);
+          const gteWord = this.gte.cop2(instr, 0) | 0;
+          if (!this.storesBlocked) {
+            bus.store32(addr >>> 0, gteWord);
+          }
           break;
         }
         default:
@@ -888,6 +941,7 @@ export class CpuR3000A implements Cpu {
     this.hiV = ctx.hi | 0;
     this.loV = ctx.lo | 0;
     this.srV = ctx.sr >>> 0;
+    this.syncCacheIsolation();
     this.causeV = ctx.cause >>> 0;
     this.epcV = ctx.epc >>> 0;
     this.inDelay = ctx.branchDelay;
@@ -922,6 +976,11 @@ export class CpuR3000A implements Cpu {
     const delay = wasDelayed ? 1 : 0;
     this.epcV = ((wasDelayed ? pc0 - 4 : pc0) >>> 0);
     this.causeV = ((this.causeV & CAUSE_KEEP) | (exCodeOf(kind) << 2) | (delay << 31)) >>> 0;
+    if (this.realExceptions) {
+      this.vectorException(kind, code, addr);
+
+      return;
+    }
     const pcBefore = this.pcValue;
     const nextBefore = this.nextPcValue;
     this.hooks.exception(kind, code, addr, this.core);
@@ -934,6 +993,22 @@ export class CpuR3000A implements Cpu {
       this.nextPcValue = (this.pcValue + 4) >>> 0;
     }
     this.wasStub = this.stubOf(this.pcValue);
+  }
+
+  private vectorException(kind: CpuExceptionKind, code: number, addr: number): void {
+    if (kind === 'addressLoad' || kind === 'addressStore') {
+      this.badVAddr = addr >>> 0;
+    }
+    this.srV = ((this.srV & ~0x3F) | ((this.srV << 2) & 0x3F)) >>> 0;
+    this.syncCacheIsolation();
+    const vector = (this.srV & 0x400000) !== 0 ? 0xBFC00180 : 0x80000080;
+    this.pcValue = vector;
+    this.nextPcValue = (vector + 4) >>> 0;
+    this.inDelay = false;
+  }
+
+  private syncCacheIsolation(): void {
+    this.storesBlocked = this.realExceptions && (this.srV & 0x10000) !== 0;
   }
 
   private stubOf(pc: number): boolean {
@@ -949,7 +1024,7 @@ export class CpuR3000A implements Cpu {
       case 12:
         return this.srV;
       case 13:
-        return this.causeV;
+        return this.realExceptions && this.irqCheck() !== 0 ? (this.causeV | 0x400) >>> 0 : this.causeV;
       case 14:
         return this.epcV;
       case 15:
@@ -963,6 +1038,7 @@ export class CpuR3000A implements Cpu {
     switch (i) {
       case 12:
         this.srV = v >>> 0;
+        this.syncCacheIsolation();
         break;
       case 13:
         this.causeV = ((this.causeV & 0xFFFF00FF) | (v & 0x300)) >>> 0;

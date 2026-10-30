@@ -586,3 +586,50 @@ describe('Bus SIO0 pad protocol', () => {
     expect(bus.load16(IO + 0x44) & 2).toBe(0);
   });
 });
+describe('Bus BIOS ROM mapping', () => {
+  const buildRom = (): Uint8Array => {
+    const rom = new Uint8Array(0x80000);
+    rom.forEach((_, i) => {
+      rom[i] = (i * 7 + 3) & 0xFF;
+    });
+
+    return rom;
+  };
+
+  const makeRomBus = (rom: Uint8Array): Bus => {
+    const router = new IrqRouter();
+    const device = new FakeDmaDevice(router);
+    const devices: IoDeviceSet = { gpu: device, cd: device, spu: device, mdec: new FakeMdec(), pad: new PadState() };
+
+    return new Bus(new FakeScheduler(), new RingLogger(), new Uint32Array(RAM_SIZE / 4), devices, rom);
+  };
+
+  it('reads 8/16/32 bits through KUSEG, KSEG0 and KSEG1 mirrors', () => {
+    const rom = buildRom();
+    const bus = makeRomBus(rom);
+    const word = (rom[0x104] | (rom[0x105] << 8) | (rom[0x106] << 16) | (rom[0x107] << 24)) >>> 0;
+    for (const base of [0x1FC00000, 0x9FC00000, 0xBFC00000]) {
+      expect(bus.load32(base + 0x104)).toBe(word);
+      expect(bus.load16(base + 0x106)).toBe(word >>> 16);
+      expect(bus.load8(base + 0x105)).toBe(rom[0x105]);
+    }
+  });
+
+  it('ignores stores to the ROM region', () => {
+    const rom = buildRom();
+    const bus = makeRomBus(rom);
+    const before = bus.load32(0xBFC00000);
+    bus.store32(0xBFC00000, 0xDEADBEEF);
+    expect(bus.load32(0xBFC00000)).toBe(before);
+  });
+
+  it('reads 0xFF from expansion region 1 so no PIO cart is detected', () => {
+    const bus = makeRomBus(buildRom());
+    expect(bus.load8(0x1F000084)).toBe(0xFF);
+  });
+
+  it('keeps returning 0 for the ROM region when no ROM is given', () => {
+    const { bus } = makeBus();
+    expect(bus.load32(0xBFC00000)).toBe(0);
+  });
+});

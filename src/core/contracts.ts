@@ -134,6 +134,7 @@ export interface CpuDeps {
   gte: GteUnit;
   irqCheck(): number;
   hooks: CpuHooks;
+  realExceptions?: boolean;
 }
 
 export interface Cpu {
@@ -250,6 +251,7 @@ export interface SystemOptions {
   readonly binPath: string;
   readonly cuePath: string | null;
   readonly log: Logger;
+  readonly biosRom?: Uint8Array;
 }
 
 export interface System {

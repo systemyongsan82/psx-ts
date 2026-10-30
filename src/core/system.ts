@@ -129,10 +129,12 @@ export class PsxSystem implements System {
   readonly bios: HleBios;
   readonly cpu: CpuR3000A;
   private _frame = 0;
+  private readonly lowLevelBios: boolean;
 
   constructor(opts: SystemOptions) {
     this.log = opts.log ?? new RingLogger();
     this.sched = this._sched;
+    this.lowLevelBios = opts.biosRom !== undefined;
     this.image = new PsxBinImage(opts.binPath, this.log);
     this.iso = new IsoImage(this.image, this.log);
     this.ram = new Uint32Array(RAM_SIZE / 4);
@@ -150,7 +152,7 @@ export class PsxSystem implements System {
       spu: this.spu,
       mdec: this.mdec,
       pad: this.pad,
-    });
+    }, opts.biosRom ?? null);
     this.irq.sink = (line) => this.bus.raiseIrq(line);
     this.irq.dmaDoneSink = (ch) => this.bus.dmaChannelDone(ch);
     this.bios.padInput = this.pad;
@@ -160,6 +162,7 @@ export class PsxSystem implements System {
       bus: this.bus,
       gte: this.gte,
       irqCheck: () => this.bus.irqActive(),
+      realExceptions: this.lowLevelBios,
       hooks: {
         irqActive: () => this.bus.irqActive(),
         kuserCall: (pc, core) => this.bios.kuserCall(pc, core),
@@ -173,6 +176,13 @@ export class PsxSystem implements System {
   }
 
   boot(): void {
+    if (this.lowLevelBios) {
+      this.ram.fill(0);
+      this.cpu.reset(0xBFC00000);
+      this.installClock();
+
+      return;
+    }
     const info = this.bios.boot();
     this.bios.applyMemoryControl();
     this.cpu.reset(info.entryPc);
