@@ -14,7 +14,7 @@ import type {
   SpuXaIn,
 } from '../core/contracts';
 
-const BIN = 'Resident Evil (USA)/Resident Evil (USA).bin';
+const BIN = 'games/Resident Evil (USA)/Resident Evil (USA).bin';
 const REG0 = 0x1F801800;
 const REG1 = 0x1F801801;
 const REG2 = 0x1F801802;

@@ -858,6 +858,32 @@ describe('pad path', () => {
     expect(kuser(fix, VEC_B, 0x5C)).toBe(0x11);
     expect(kuser(fix, VEC_B, 0x5D)).toBe(0x11);
   });
+
+  test('OutdatedPadInitAndStart refreshes button_dest each vblank with byte-swapped active-low buttons', () => {
+    const fix = makeFixture();
+    fix.bios.boot();
+    const dest = 0x800B5748;
+    fix.core.setReg(4, 0x20000001);
+    fix.core.setReg(5, dest);
+    expect(kuser(fix, VEC_B, 0x15)).toBe(2);
+
+    fix.bios.padInput = { buttons: 0x4008 };
+    fix.bios.exception('interrupt', 1, 0, fix.core);
+    expect(ramReadWord(fix.ram, dest & RAM_MASK)).toBe(0xFFFFF7BF);
+    expect(kuser(fix, VEC_B, 0x16) >>> 0).toBe(0xFFFFF7BF);
+
+    fix.bios.padInput = { buttons: 0 };
+    fix.bios.exception('interrupt', 1, 0, fix.core);
+    expect(ramReadWord(fix.ram, dest & RAM_MASK)).toBe(0xFFFFFFFF);
+  });
+
+  test('OutdatedPadInitAndStart rejects unknown type', () => {
+    const fix = makeFixture();
+    fix.bios.boot();
+    fix.core.setReg(4, 0x12345678);
+    fix.core.setReg(5, 0x800B5748);
+    expect(kuser(fix, VEC_B, 0x15)).toBe(0);
+  });
 });
 
 describe('misc', () => {

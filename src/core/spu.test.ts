@@ -6,7 +6,7 @@ import { SpuCore } from './spu';
 import { PsxBinImage } from '../disc/image';
 
 const SPU_BASE = 0x1f801c00;
-const BIN = 'Resident Evil (USA)/Resident Evil (USA).bin';
+const BIN = 'games/Resident Evil (USA)/Resident Evil (USA).bin';
 
 interface TestEvent {
   deadline: number;

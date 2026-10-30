@@ -96,6 +96,12 @@ import {
 } from './kernel/strmem';
 
 const RCNT_TIMER_COUNT = 4;
+
+function outdatedPadWord(pad1ActiveLow: number): number {
+  const swapped = ((pad1ActiveLow & 0xFF) << 8) | ((pad1ActiveLow >>> 8) & 0xFF);
+
+  return (0xFFFF_0000 | swapped) >>> 0;
+}
 const EXC_STUB_WORDS: Array<number> = [0x3C1A_0000, 0x275A_0C80, 0x0340_0008, 0x0000_0000];
 const BOOT_ARG1 = 1;
 const BOOT_ARG2 = 0;
@@ -479,11 +485,6 @@ export class HleBios implements Bios {
   }
 
   private refreshPadBuffers(): void {
-    if (this.padBuf1 === 0 && this.padBuf2 === 0) {
-      this.warnOncePad('InitPad not called; no pad buffers');
-
-      return;
-    }
     if (this.padInput === null) {
       this.warnOncePad('pad input not wired (system.bios.padInput); buffers stay in timeout state');
 
@@ -491,14 +492,17 @@ export class HleBios implements Bios {
     }
     const buttons = this.padInput.buttons & 0xFFFF;
     const inv = (~buttons) & 0xFFFF;
+    if (this.outdatedDest !== 0) {
+      ramWriteWord(this.ram, this.outdatedDest, outdatedPadWord(inv));
+    }
+    if (this.padBuf1 === 0 && this.padBuf2 === 0) {
+      return;
+    }
     if (this.padBuf1 !== 0) {
       this.writePadReply(this.padBuf1, inv);
     }
     if (this.padBuf2 !== 0) {
       this.writePadReply(this.padBuf2, inv);
-    }
-    if (this.outdatedDest !== 0) {
-      ramWriteWord(this.ram, this.outdatedDest, buttons >>> 0);
     }
   }
 
@@ -1499,13 +1503,24 @@ export class HleBios implements Bios {
       return this.ret(core, 0);
     }
     if (fn === 0x15) {
+      const type = this.a0(core) >>> 0;
+      if (type !== 0x2000_0000 && type !== 0x2000_0001) {
+        return this.ret(core, 0);
+      }
       this.outdatedDest = this.a1(core);
+      if (!this.padOn) {
+        this.intr.enqueueInternal(2, 'padcard');
+      }
       this.padOn = true;
 
-      return this.ret(core, 0);
+      return this.ret(core, 2);
     }
     if (fn === 0x16) {
-      const v = this.padInput === null ? 0xFFFF : this.padInput.buttons & 0xFFFF;
+      const inv = this.padInput === null ? 0xFFFF : (~this.padInput.buttons) & 0xFFFF;
+      const v = outdatedPadWord(inv);
+      if (this.outdatedDest !== 0) {
+        ramWriteWord(this.ram, this.outdatedDest, v);
+      }
 
       return this.ret(core, v);
     }

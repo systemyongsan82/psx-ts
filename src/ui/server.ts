@@ -8,7 +8,7 @@ const AUDIO_TAG = 0x4155444f;
 const AUDIO_CHUNK_FRAMES = 256;
 const MAX_AUDIO_CHUNKS_PER_FRAME = 4;
 
-const binPath = process.argv[2] ?? 'Resident Evil (USA)/Resident Evil (USA).bin';
+const binPath = process.argv[2] ?? 'games/Resident Evil (USA)/Resident Evil (USA).bin';
 const port = Number(process.argv[3] ?? 7171);
 
 const log = new RingLogger();

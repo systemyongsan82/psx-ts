@@ -13,7 +13,7 @@ interface Args {
 }
 
 function parseArgs(argv: Array<string>): Args {
-  const args: Args = { frames: 600, outDir: 'shots', shotEvery: 60, logLines: 300, binPath: 'Resident Evil (USA)/Resident Evil (USA).bin' };
+  const args: Args = { frames: 600, outDir: 'shots', shotEvery: 60, logLines: 300, binPath: 'games/Resident Evil (USA)/Resident Evil (USA).bin' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = (): string => {

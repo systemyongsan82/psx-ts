@@ -4,7 +4,7 @@ import { IsoImage, readEntryBytes } from './iso9660';
 import { parsePsExe, planExeLoad } from './psxexe';
 import { RingLogger } from '../core/logger';
 
-const BIN = 'Resident Evil (USA)/Resident Evil (USA).bin';
+const BIN = 'games/Resident Evil (USA)/Resident Evil (USA).bin';
 
 test('image detects starting at LBA 0', () => {
   const log = new RingLogger();

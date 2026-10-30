@@ -1,7 +1,7 @@
 import { RingLogger } from '../core/logger';
 import { PsxSystem } from '../core/system';
 
-const sys = new PsxSystem({ binPath: 'Resident Evil (USA)/Resident Evil (USA).bin', cuePath: null, log: new RingLogger() });
+const sys = new PsxSystem({ binPath: 'games/Resident Evil (USA)/Resident Evil (USA).bin', cuePath: null, log: new RingLogger() });
 sys.boot();
 
 const ring: Array<number> = [];
