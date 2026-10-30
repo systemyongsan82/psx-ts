@@ -85,7 +85,7 @@ function clamp16(v: number): number {
 
 function decodeAdpcmSample(t: number, hdr: number, old: number, older: number): number {
   const storedShift = hdr & 0xF;
-  const shifter = storedShift > 12 ? 3 : 12 - storedShift;
+  const shifter = storedShift > 12 ? 9 : storedShift;
   let filter = (hdr >>> 4) & 0x7;
   if (filter > 4) {
     filter = 4;
@@ -1123,7 +1123,7 @@ export class SpuCore implements Spu {
 
   private onXaSector(channel: number, subheader: number, payload: Uint8Array): void {
     void channel;
-    const coding = (subheader >>> 24) & 0xFF;
+    const coding = subheader & 0xFF;
     if (((coding >>> 4) & 3) !== 0) {
       if (!this.xa8BitWarned) {
         this.log.warn('spu', 'XA 8-bit ADPCM unsupported, sector dropped');
@@ -1136,8 +1136,8 @@ export class SpuCore implements Spu {
     const stereo = (coding & 3) === 1;
     this.cdRate = ((coding >>> 2) & 1) === 1 ? CD_RATE_18900 : CD_RATE_37800;
     const portions = payload.length >= XA_DATA_BYTES ? XA_PORTION_COUNT : payload.length >>> 7;
-    let monoOld = 0;
-    let monoOlder = 0;
+    let monoOld = this.cdChainOldL;
+    let monoOlder = this.cdChainOlderL;
 
     for (let p = 0; p < portions; p++) {
       const off = p * XA_PORTION_BYTES;
@@ -1196,6 +1196,8 @@ export class SpuCore implements Spu {
           const s = monoScratch[m];
           this.pushCdSample(s, s);
         }
+        this.cdChainOldL = monoOld;
+        this.cdChainOlderL = monoOlder;
       }
     }
   }

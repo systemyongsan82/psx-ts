@@ -373,7 +373,7 @@ test('XA stereo sector from the real disc decodes to sane audio', () => {
   setMainVol(spu, 0x3fff);
   spu.store16(0x1f801db0, 0x7fff);
   spu.store16(0x1f801db2, 0x7fff);
-  const subheader = raw[16] | (raw[17] << 8) | (raw[18] << 16) | (raw[19] << 24);
+  const subheader = (raw[16] << 24) | (raw[17] << 16) | (raw[18] << 8) | raw[19];
   spu.xaSink.xaSector(raw[17], subheader >>> 0, raw.subarray(24, 24 + 0x900));
   for (let i = 0; i < 4200; i++) {
     rig.sched.advance(768);
@@ -425,7 +425,7 @@ test('XA mono sector mirrors left into right', () => {
       payload[off + 16 + j * 4 + 3] = b;
     }
   }
-  const subheader = 1 | (1 << 8) | (0x62 << 16) | (0x00 << 24);
+  const subheader = (1 << 24) | (1 << 16) | (0x62 << 8) | 0x00;
   spu.xaSink.xaSector(1, subheader >>> 0, payload);
   for (let i = 0; i < 6000; i++) {
     rig.sched.advance(768);
@@ -682,4 +682,65 @@ test('sample clock keeps ticking past 2^31 cycles (about 63 s of emulated time)'
   }
   expect(sched.now).toBeGreaterThan(0x8000_0000);
   expect(spu.sink.availableFrames - before).toBeGreaterThan(0x1_0000 / 768);
+});
+
+function monoXaPayload(header: number, nibble: number): Uint8Array {
+  const payload = new Uint8Array(0x900);
+  for (let p = 0; p < 18; p++) {
+    const off = p * 128;
+    for (let i = 0; i < 8; i++) {
+      payload[off + 4 + i] = header;
+    }
+    for (let j = 0; j < 28 * 4; j++) {
+      payload[off + 16 + j] = (nibble << 4) | nibble;
+    }
+  }
+
+  return payload;
+}
+
+function xaMonoPeak(header: number, nibble: number): number {
+  const rig = makeSpu();
+  rig.spu.store16(0x1f801daa, 0xc001);
+  setMainVol(rig.spu, 0x3fff);
+  rig.spu.store16(0x1f801db0, 0x7fff);
+  rig.spu.store16(0x1f801db2, 0x7fff);
+  rig.spu.xaSink.xaSector(1, ((1 << 24) | (1 << 16) | (0x62 << 8)) >>> 0, monoXaPayload(header, nibble));
+  for (let i = 0; i < 6000; i++) {
+    rig.sched.advance(768);
+  }
+
+  return stats(drain(rig, 1000)).peak;
+}
+
+test('XA ADPCM shift 0 scales a nibble by 4096 and shift 12 leaves it unscaled', () => {
+  expect(xaMonoPeak(0x00, 1)).toBeCloseTo(4096 / 32768, 2);
+  expect(xaMonoPeak(0x0c, 1)).toBeLessThan(0.001);
+});
+
+test('XA coding byte is read from the low subheader byte (stereo flag)', () => {
+  const rig = makeSpu();
+  rig.spu.store16(0x1f801daa, 0xc001);
+  setMainVol(rig.spu, 0x3fff);
+  rig.spu.store16(0x1f801db0, 0x7fff);
+  rig.spu.store16(0x1f801db2, 0x7fff);
+  const payload = monoXaPayload(0x00, 0);
+  for (let p = 0; p < 18; p++) {
+    for (let j = 0; j < 28 * 4; j++) {
+      payload[p * 128 + 16 + j] = 0x01;
+    }
+  }
+  rig.spu.xaSink.xaSector(1, ((1 << 24) | (1 << 16) | (0x62 << 8) | 0x01) >>> 0, payload);
+  for (let i = 0; i < 6000; i++) {
+    rig.sched.advance(768);
+  }
+  const dst = drain(rig, 1000);
+  let maxL = 0;
+  let maxR = 0;
+  for (let i = 0; i < dst.length; i += 2) {
+    maxL = Math.max(maxL, Math.abs(dst[i]));
+    maxR = Math.max(maxR, Math.abs(dst[i + 1]));
+  }
+  expect(maxL).toBeGreaterThan(0.1);
+  expect(maxR).toBe(0);
 });
