@@ -14,6 +14,21 @@ test('image detects starting at LBA 0', () => {
   img.close();
 });
 
+test('sector classification per nocash submode semantics', () => {
+  const log = new RingLogger();
+  const img = new PsxBinImage(BIN, log);
+  const dir = new Uint8Array(2352);
+  img.readRawSectors(270719, 1, dir);
+  expect(dir[15]).toBe(2);
+  expect(dir[18] & 0x20).toBe(0);
+  const xa = new Uint8Array(2352);
+  img.readRawSectors(11430, 1, xa);
+  expect((xa[18] & 0x20) !== 0).toBe(true);
+  expect((xa[18] & 0x04) !== 0).toBe(true);
+  expect((xa[18] & 0x40) !== 0).toBe(true);
+  img.close();
+});
+
 test('iso9660 finds the boot exe and SYSTEM.CNF', () => {
   const log = new RingLogger();
   const img = new PsxBinImage(BIN, log);
@@ -33,7 +48,7 @@ test('iso9660 finds the boot exe and SYSTEM.CNF', () => {
   img.close();
 });
 
-test('ps-exe parses RE boot exe with the t_size=0 quirk', () => {
+test('ps-exe parses RE boot exe per nocash field map', () => {
   const log = new RingLogger();
   const img = new PsxBinImage(BIN, log);
   const iso = new IsoImage(img, log);
@@ -41,19 +56,18 @@ test('ps-exe parses RE boot exe with the t_size=0 quirk', () => {
   if (exe === null) {
     throw new Error('SLUS_001.70 not found');
   }
-  const bytes = readEntryBytes(img, exe.lba, 0, 2048);
+  const bytes = readEntryBytes(img, exe.lba, 0, exe.size);
   const info = parsePsExe(bytes);
-  expect(info.textAddr).toBe(0x8005f8a0);
-  expect(info.textSize).toBe(0);
-  expect(info.dataAddr).toBe(0x80010000);
-  expect(info.dataSize).toBe(0x0009f000);
+  expect(info.entryPc).toBe(0x8005f8a0);
+  expect(info.gp).toBe(0);
+  expect(info.loadAddr).toBe(0x80010000);
+  expect(info.loadSize).toBe(0x0009f000);
+  expect(info.memfillSize).toBe(0);
+  expect(info.spBase).toBe(0x801ffff0);
   const plan = planExeLoad(info);
-  expect(plan.entry).toBe(0x8005f8a0);
-  const firstLoad = plan.loads[0];
-  if (firstLoad === undefined) {
-    throw new Error('exe load plan has no loads');
-  }
-  expect(firstLoad.addr).toBe(0x80010000);
-  expect(firstLoad.size).toBe(0x0009f000);
+  expect(plan.entryPc).toBe(0x8005f8a0);
+  expect(plan.loadAddr).toBe(0x80010000);
+  expect(plan.loadSize).toBe(0x0009f000);
+  expect(info.payload.length).toBe(651264);
   img.close();
 });

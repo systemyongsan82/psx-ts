@@ -4,8 +4,8 @@
 
 - File: `Resident Evil (USA)/Resident Evil (USA).bin` + `.cue` (single track, MODE2/2352, 289,277 raw sectors, ~64.3 min).
 - The `.cue` says INDEX 01 at 00:00:00 but the first synced header in the file reads MSF 00:02:00 — i.e. **file sector 0 IS PSX LBA 0** (`PsxBinImage` auto-detects `baseOffset=0`).
-- Sync pattern per sector: `00 FF FF FF FF FF FF FF FF FF FF 00`, MSF at offset 12, mode byte at 15, subheader (file/ch/submode/coding) at 16..19, user data at 24 (2048 bytes, Form1) or audio at 24 (2328 bytes, Form2).
-- Form2 usage on this disc: 41,842 sectors — essentially one giant XA-audio stream from raw 11430 to 269517 (~57 min; RE's continuous streamed music/ambience, seeked by the game). A few stray Form2 sectors near the start.
+- Form2 payload is 0x914 = 2324 bytes (XA audio blocks occupy 18×128 = 2304 of it; the rest padding/EDC); Form1 user data = 800h = 2048 bytes. Submode form bit = bit5 (0x20); audio+realtime bits (bit2+bit6) decide XA delivery, per docs/kb/cdrom.md §6-7.
+- XA audio on this disc: 41,838 audio-flagged Form2 sectors. Layout: interleaved 1-in-8 runs (LBAs 11430..~153746, with periodic larger gaps where data bursts sit between audio), a big pure-Form1 data region 153747..224269, then a contiguous ~45k-sector audio run 224270..269517. This is interleaved/streamed XA — the drive delivers data sectors to CPU and audio to SPU concurrently; RE seeks and reads both.
 - ISO9660: volume `RESIDENT_EVIL`; PVD at LBA 16; root dir at LBA 22. Files (dir records):
 
 | name | extent | size |
@@ -17,10 +17,10 @@
 
 - SYSTEM.CNF content: `BOOT = cdrom:SLUS_001.70;1` / `TCB = 4` / `EVENT = 16` / `STACK = 0X801FFF00`.
 
-## Boot exe (PS-X EXE header of SLUS_001.70)
+## Boot exe (PS-X EXE header of SLUS_001.70, nocash semantics)
 
-- `t_addr=0x8005F8A0, t_size=0, d_addr=0x80010000, d_size=0x0009F000 (651,264), pc=0, gp=0`
-- Loader rule encoded in `src/disc/psxexe.ts#planExeLoad`: t_size=0 → skip text load; load 651,264 bytes at `0x80010000`; entry = `pc==0 ? t_addr : pc` → **entry 0x8005F8A0**; stack top from SYSTEM.CNF = `0x801FFF00`.
+- Nocash field map (docs/kb/exe-psx.md + addendum): `0x10` = Initial PC, `0x14` = GP, `0x18` = load destination, `0x1C` = filesize (excludes 0x800-byte header), `0x28/0x2C` = memfill (zero-fill region), `0x30/0x34` = SP base/offset.
+- SLUS_001.70 observed: `0x10=0x8005F8A0 (entry), 0x14=0 (gp), 0x18=0x80010000 (dest), 0x1C=0x0009F000 (=651,264; 2048+651,264=653,312 ✔), memfill=0, spBase=0x801FFFF0`. Loader rule (`src/disc/psxexe.ts#planExeLoad`): load 651,264 bytes at `0x80010000`, no memfill, **entry 0x8005F8A0**; stack top from SYSTEM.CNF = `0x801FFF00` (SYSTEM.CNF wins over the exe SP base; per nocash boot-state: SP = SystemCnfSp).
 
 ## What "playable" requires (acceptance checklist)
 
@@ -38,7 +38,7 @@
 
 - Intro FMVs are XA video (STR interleave) + XA audio → MDEC decode path must work for correct boot flow.
 - RE polls its own CD state via kernel cd device; expects `CdOpen/CdRead/CdInt` style completion events. If RE instead uses raw `cdrom:1F801800` command reads, the controller device must be command-complete on its own.
-- Timer1 in hblank / timer2 in 1/8-sysclk are used for frame pacing; vsync event (kernel spec 0xF1000002?) drives the main loop.
+- Timer1 in hblank / timer2 in 1/8-sysclk are used for frame pacing; vsync event classes per nocash: root-counter class `F2000003h` spec 2 (vblank) or IRQ0-callback class `F0000001h` spec 0x1000; CDROM events are class `F0000003h` (see docs/kb/kernel.md §4-5).
 - The game never relies on BIOS audio; all audio is XA streaming through SPU CD input + SPU voice SFX.
 - RE sets GPU display 320x240 or 368x240 (FMV) and VRAM texture pages at 0xA20 etc; texture window + dithering used; do not approximate.
 - Save data: not required. Disable-safe: if the game asks, reply "no memcard" via SIO absence (DIP: pad only).

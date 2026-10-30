@@ -72,12 +72,13 @@ export function detectBaseOffset(firstSector: Uint8Array): number {
 export type SectorKind = 'mode2form1' | 'mode2form2' | 'unknown';
 
 export function detectSectorKind(raw: Uint8Array, offset: number): SectorKind {
-  if (raw[offset + 15] === 2 && (raw[offset + 18] & 0x08) !== 0) {
-    return 'mode2form1';
+  if (raw[offset + 15] !== 2) {
+    return 'unknown';
   }
-  if (raw[offset + 15] === 2 && (raw[offset + 18] & 0x04) !== 0) {
+  const submode = raw[offset + 18];
+  if ((submode & 0x20) !== 0) {
     return 'mode2form2';
   }
 
-  return 'unknown';
+  return 'mode2form1';
 }

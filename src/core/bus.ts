@@ -38,8 +38,8 @@ export class Bus implements MemAccess {
 
   dmaChannelDone(_ch: number): void {}
 
-  irqActive(): boolean {
-    return false;
+  irqActive(): number {
+    return 0;
   }
 
   lineTick(): void {}

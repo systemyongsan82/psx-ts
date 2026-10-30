@@ -16,50 +16,34 @@ export function parsePsExe(file: Uint8Array): PsExeInfo {
     throw new Error(`not a PS-EXE (magic ${JSON.stringify(magicAcc)})`);
   }
 
-  const textAddr = u32(file, 0x10);
-  const textSize = u32(file, 0x14);
-  const dataAddr = u32(file, 0x18);
-  const dataSize = u32(file, 0x1c);
-  const bssAddr = u32(file, 0x20);
-  const bssSize = u32(file, 0x24);
-  const pcField = u32(file, 0x28);
-  const gp = u32(file, 0x2c);
-
-  const payload = file.slice(HEADER_SIZE);
-  const entry = pcField !== 0 ? pcField : textAddr;
-
   return {
     magic: MAGIC,
-    textAddr,
-    textSize,
-    dataAddr,
-    dataSize,
-    bssAddr,
-    bssSize,
-    pc: entry,
-    gp,
-    payload,
+    entryPc: u32(file, 0x10),
+    gp: u32(file, 0x14),
+    loadAddr: u32(file, 0x18),
+    loadSize: u32(file, 0x1c),
+    memfillAddr: u32(file, 0x28),
+    memfillSize: u32(file, 0x2c),
+    spBase: u32(file, 0x30),
+    spOffset: u32(file, 0x34),
+    payload: file.slice(HEADER_SIZE),
   };
 }
 
 export interface ExeLoadPlan {
-  readonly loads: Array<{ addr: number; offset: number; size: number }>;
-  readonly bss: Array<{ addr: number; size: number }>;
-  readonly entry: number;
+  readonly loadAddr: number;
+  readonly loadSize: number;
+  readonly memfillAddr: number;
+  readonly memfillSize: number;
+  readonly entryPc: number;
 }
 
 export function planExeLoad(exe: PsExeInfo): ExeLoadPlan {
-  const loads: Array<{ addr: number; offset: number; size: number }> = [];
-  let payloadOffset = 0;
-  if (exe.textSize > 0) {
-    loads.push({ addr: exe.textAddr, offset: payloadOffset, size: exe.textSize });
-    payloadOffset += exe.textSize;
-  }
-  if (exe.dataSize > 0) {
-    loads.push({ addr: exe.dataAddr, offset: payloadOffset, size: exe.dataSize });
-    payloadOffset += exe.dataSize;
-  }
-  const bss = exe.bssSize > 0 ? [{ addr: exe.bssAddr, size: exe.bssSize }] : [];
-
-  return { loads, bss, entry: exe.pc };
+  return {
+    loadAddr: exe.loadAddr,
+    loadSize: exe.loadSize,
+    memfillAddr: exe.memfillAddr,
+    memfillSize: exe.memfillSize,
+    entryPc: exe.entryPc,
+  };
 }

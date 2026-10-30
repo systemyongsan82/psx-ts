@@ -120,7 +120,7 @@ export interface CpuRegAccess {
 }
 
 export interface CpuHooks {
-  irqActive(): boolean;
+  irqActive(): number;
   kuserCall(pc: number, core: CpuRegAccess): boolean;
   exception(kind: CpuExceptionKind, code: number, addr: number, core: CpuRegAccess): void;
 }
@@ -132,7 +132,7 @@ export interface GteUnit {
 export interface CpuDeps {
   bus: MemAccess;
   gte: GteUnit;
-  irqCheck(): boolean;
+  irqCheck(): number;
   hooks: CpuHooks;
 }
 
@@ -217,14 +217,14 @@ export interface Iso9660 {
 
 export interface PsExeInfo {
   readonly magic: string;
-  readonly textAddr: number;
-  readonly textSize: number;
-  readonly pc: number;
+  readonly entryPc: number;
   readonly gp: number;
-  readonly dataAddr: number;
-  readonly dataSize: number;
-  readonly bssAddr: number;
-  readonly bssSize: number;
+  readonly loadAddr: number;
+  readonly loadSize: number;
+  readonly memfillAddr: number;
+  readonly memfillSize: number;
+  readonly spBase: number;
+  readonly spOffset: number;
   readonly payload: Uint8Array;
 }
 
