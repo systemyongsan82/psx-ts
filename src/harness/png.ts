@@ -70,7 +70,7 @@ export function encodePng(width: number, height: number, rgba: Uint8Array): Uint
   const stride = width * 4;
   const raw = new Uint8Array((stride + 1) * height);
   for (let y = 0; y < height; y++) {
-    raw[y * (stride + 1)] = 4;
+    raw[y * (stride + 1)] = 0;
     raw.set(rgba.subarray(y * stride, (y + 1) * stride), y * (stride + 1) + 1);
   }
   const ihdr = new Uint8Array(13);
