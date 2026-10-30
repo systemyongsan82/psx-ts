@@ -164,6 +164,7 @@ export type CdCommandResult = number;
 export interface CdFileEntry {
   readonly lba: number;
   readonly size: number;
+  readonly name?: string;
 }
 
 export interface CdRomHle {
