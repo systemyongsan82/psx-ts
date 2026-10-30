@@ -697,7 +697,6 @@ export class Cdrom implements CdromUnit {
 
   private commandSeek(): void {
     this.reading = false;
-    this.locDirty = false;
     this.spindleOff = false;
     this.seeking = true;
     const target = this.seekTarget;

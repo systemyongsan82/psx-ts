@@ -331,6 +331,36 @@ test('setloc, seekL and the 8-byte location reports match real sector headers', 
   f.img.close();
 });
 
+test('readN after setloc and seekL starts at the seek target, not the previous read position', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  settle(f, 30_000);
+  sendCommand(f, 0x06, []);
+  settle(f, 30_000);
+  f.cd.tick(CD_SECTOR_CYCLES * 3);
+  ackAll(f);
+  sendCommand(f, 0x09, []);
+  settle(f, 30_000);
+  settle(f, 30_000);
+  sendCommand(f, 0x02, [0x60, 0x11, 0x43]);
+  settle(f, 30_000);
+  sendCommand(f, 0x15, []);
+  settle(f, 30_000);
+  f.sched.advance(13_547_520);
+  ackAll(f);
+  sendCommand(f, 0x0E, [0x20]);
+  settle(f, 30_000);
+  sendCommand(f, 0x06, []);
+  settle(f, 30_000);
+  f.cd.tick(CD_SECTOR_CYCLES);
+  setIndex(f, 0);
+  f.cd.store8(REG3, 0x00);
+  f.cd.store8(REG3, 0x80);
+  const header = [f.cd.load8(REG2), f.cd.load8(REG2), f.cd.load8(REG2)];
+  expect(header).toEqual([0x60, 0x11, 0x43]);
+  f.img.close();
+});
+
 test('readN: INT3 then INT1 per sector, BFRD handshake, DRQSTS, DMA data', () => {
   const f = makeDrive();
   sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
