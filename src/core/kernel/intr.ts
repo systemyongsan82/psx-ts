@@ -326,6 +326,7 @@ export class CallbackRunner {
     desc.fn2 = fn2 >>> 0;
     this.descTop = this.ctxStack.length;
     core.setReg(29, this.spForDepth(depth + 1));
+    core.setSr((core.sr() & ~1) >>> 0);
   }
 
   private spForDepth(depth: number): number {

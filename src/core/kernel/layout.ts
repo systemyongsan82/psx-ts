@@ -145,7 +145,8 @@ export const RC_REG_BASE = 0x1F80_1100;
 export const RC_REG_MODE_OFF = 4;
 export const RC_REG_TARGET_OFF = 8;
 
-export function isKernelCallPc(pc: number): boolean {
+export function isKernelCallPc(virtualPc: number): boolean {
+  const pc = (virtualPc & 0x1FFF_FFFF) >>> 0;
   if (pc === VEC_A || pc === VEC_B || pc === VEC_C || pc === VEC_RET) {
     return true;
   }

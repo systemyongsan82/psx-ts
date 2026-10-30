@@ -195,7 +195,8 @@ export class HleBios implements Bios {
     this.hwStore(0x1F80_1060, 0x0000_0B88);
   }
 
-  kuserCall(pc: number, core: CpuRegAccess): boolean {
+  kuserCall(virtualPc: number, core: CpuRegAccess): boolean {
+    const pc = (virtualPc & 0x1FFF_FFFF) >>> 0;
     if (pc === VEC_RET) {
       return this.runner.returnFrom(core);
     }
@@ -227,7 +228,7 @@ export class HleBios implements Bios {
       }
     }
 
-    this.log.warn('bios', `kuserCall at unowned pc ${pc.toString(16)}`);
+    this.log.warn('bios', `kuserCall at unowned pc ${virtualPc.toString(16)}`);
 
     return false;
   }
@@ -239,7 +240,7 @@ export class HleBios implements Bios {
       return;
     }
     if (kind === 'syscall') {
-      this.doSyscall(code, core);
+      this.doSyscall(core.getReg(4) >>> 0, core);
 
       return;
     }
@@ -377,9 +378,7 @@ export class HleBios implements Bios {
     }
     const wokeWait = this.maybeResumeWaiter();
     if (!wokeWait && !this.walkAborted && this.runner.pendingCount === 0 && this.runner.depth === 0 && this.exitHookFn !== 0) {
-      core.setReg(2, 1);
-
-      this.runner.startEvent(this.exitHookFn, 0, 0, core, false);
+      this.startExitHook(this.exitHookFn, core);
 
       return;
     }
@@ -387,6 +386,19 @@ export class HleBios implements Bios {
     if (next !== null) {
       this.runner.startQueued(next, core, false);
     }
+  }
+
+  private startExitHook(jmpBuf: number, core: CpuRegAccess): void {
+    const word = (index: number): number => ramReadWord(this.ram, physOf(jmpBuf) + index * 4) >>> 0;
+
+    this.runner.startEvent(word(0), 0, 0, core, false);
+    core.setReg(2, 1);
+    core.setReg(29, word(1));
+    core.setReg(30, word(2));
+    for (let i = 0; i < 8; i++) {
+      core.setReg(16 + i, word(3 + i));
+    }
+    core.setReg(28, word(11));
   }
 
   private maybeResumeWaiter(): boolean {
@@ -517,14 +529,14 @@ export class HleBios implements Bios {
       case 1: {
         const sr = core.sr() >>> 0;
         const both = (sr & 0x0000_0404) === 0x0000_0404;
-        core.setSr((sr & ~0x0000_0404) >>> 0);
+        core.setSr((sr & ~0x0000_0405) >>> 0);
         this.ret(core, both ? 1 : 0);
 
         return;
       }
       case 2: {
         const sr = core.sr() >>> 0;
-        core.setSr((sr | 0x0000_0404) >>> 0);
+        core.setSr((sr | 0x0000_0405) >>> 0);
         this.ret(core, 0);
 
         return;
@@ -535,7 +547,7 @@ export class HleBios implements Bios {
 
         return;
       default:
-        this.log.debug('bios', `syscall ${code.toString(16)}h -> DeliverEvent(F0000010h,4000h)`);
+        this.log.debug('bios', `syscall ${code.toString(16)}h pc=${core.pc().toString(16)} -> DeliverEvent(F0000010h,4000h)`);
         const redirected = this.deliverFromGame(EV_CLASS_EXCEPTION, EV_SPEC_SYSCALL, core);
         if (!redirected) {
           this.ret(core, 0);

@@ -20,7 +20,6 @@ const USER_DATA_SIZE = 0x800;
 const RAW_MINUS_SYNC_SIZE = 0x924;
 const XA_PAYLOAD_SIZE = 2304;
 const FIFO_SIZE = 16;
-const HLE_CHUNK_SECTORS = 40;
 
 const FIRST_RESPONSE_CYCLES = 30_000;
 const PAUSE_SECOND_CYCLES = 2_200_000;
@@ -81,7 +80,7 @@ export class Cdrom implements CdromUnit {
   private readonly locCache = new Uint8Array(HEADER_SIZE);
   private readonly xaRaw = new Uint8Array(RAW_SECTOR_SIZE);
   private readonly dataBuf = new Uint8Array(RAW_MINUS_SYNC_SIZE);
-  private readonly hleChunk = new Uint8Array(HLE_CHUNK_SECTORS * RAW_SECTOR_SIZE);
+  private readonly hleChunk = new Uint8Array(RAW_SECTOR_SIZE);
 
   private index = 0;
   private irqEnable = 0x1F;
@@ -178,16 +177,15 @@ export class Cdrom implements CdromUnit {
     let skip = Math.max(0, byteOffset) % USER_DATA_SIZE;
     let done = 0;
     while (done < length) {
-      const count = Math.min(HLE_CHUNK_SECTORS, Math.ceil((length - done) / USER_DATA_SIZE));
-      if (!this.image.readRawSectors(sector, count, this.hleChunk)) {
+      if (!this.image.readRawSectors(sector, 1, this.hleChunk)) {
         this.log.warn('cdrom', `hle bulk read out of range at lba ${sector}`);
         return;
       }
-      const take = Math.min(count * USER_DATA_SIZE - skip, length - done);
+      const take = Math.min(USER_DATA_SIZE - skip, length - done);
       this.spreadWrite(ram, dstAddr + done, this.hleChunk, USER_DATA_OFFSET + skip, take);
       done += take;
       skip = 0;
-      sector += count;
+      sector += 1;
     }
   }
 

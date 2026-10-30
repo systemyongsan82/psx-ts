@@ -42,6 +42,7 @@ export function main(): void {
   const started = performance.now();
   const system = new PsxSystem({ binPath: args.binPath, cuePath: null, log });
   system.log.debug('sys', 'system constructed');
+  system.boot();
 
   let shotIndex = 0;
   const stats: Array<string> = [];

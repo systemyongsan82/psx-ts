@@ -197,8 +197,10 @@ export class PsxSystem implements System {
         this._frame++;
       }
       if (this.bus.line === VBLANK_LINE) {
+        this.bus.raiseIrq(0);
         this.gpu.frameBoundary();
       }
+      this.cd.tick(CYCLES_PER_LINE);
       this.sched.at(CYCLES_PER_LINE, lineTick);
     };
     this.sched.at(CYCLES_PER_LINE, lineTick);

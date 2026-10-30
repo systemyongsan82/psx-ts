@@ -80,17 +80,17 @@ export function writeKernelImage(ram: Uint32Array, counts: KernelCounts): void {
 
   for (let fn = 0; fn < JUMP_A_COUNT; fn++) {
     const slot = JUMP_A_BASE + fn * JUMP_A_SLOT;
-    ramWriteWord(ram, slot, slot);
+    ramWriteWord(ram, slot, JR_RA);
     ramWriteWord(ram, slot + 4, JR_RA);
   }
   for (let fn = 0; fn < B_SENTINEL_COUNT; fn++) {
     const at = B_SENTINEL_BASE + fn * B_SENTINEL_STRIDE;
-    ramWriteWord(ram, at, at);
+    ramWriteWord(ram, at, JR_RA);
     ramWriteWord(ram, at + 4, JR_RA);
   }
   for (let fn = 0; fn < C_SENTINEL_COUNT; fn++) {
     const at = C_SENTINEL_BASE + fn * C_SENTINEL_STRIDE;
-    ramWriteWord(ram, at, at);
+    ramWriteWord(ram, at, JR_RA);
     ramWriteWord(ram, at + 4, JR_RA);
   }
 

@@ -438,10 +438,10 @@ describe('boot', () => {
     expect(ramReadWord(fix.ram, VEC_B)).toBe(0x03E00008);
     expect(ramReadWord(fix.ram, VEC_C)).toBe(0x03E00008);
     expect(ramReadWord(fix.ram, VEC_RET)).toBe(0x08000038);
-    expect(ramReadWord(fix.ram, 0x0200)).toBe(0x0200);
+    expect(ramReadWord(fix.ram, 0x0200)).toBe(0x03E00008);
     expect(ramReadWord(fix.ram, 0x0204)).toBe(0x03E00008);
-    expect(ramReadWord(fix.ram, B_SENTINEL_BASE)).toBe(B_SENTINEL_BASE);
-    expect(ramReadWord(fix.ram, C_SENTINEL_BASE)).toBe(C_SENTINEL_BASE);
+    expect(ramReadWord(fix.ram, B_SENTINEL_BASE)).toBe(0x03E00008);
+    expect(ramReadWord(fix.ram, C_SENTINEL_BASE)).toBe(0x03E00008);
   });
 
   test('command line from SYSTEM.CNF', () => {
@@ -790,12 +790,10 @@ describe('interrupt path', () => {
     fix.core.setReg(4, 1);
     fix.bios.exception('syscall', 1, 0, fix.core);
     expect(fix.core.getReg(2)).toBe(1);
-    expect(fix.core.sr() & 0x404).toBe(0);
-    const srAfterEnter = fix.core.sr();
+    expect(fix.core.sr() & 0x405).toBe(0);
     fix.core.setReg(4, 2);
     fix.bios.exception('syscall', 2, 0, fix.core);
-    expect(fix.core.sr() & 0x404).toBe(0x404);
-    expect(fix.core.sr() & 0x1).toBe(srAfterEnter & 0x1);
+    expect(fix.core.sr() & 0x405).toBe(0x405);
     fix.core.setSr(0x402);
     fix.bios.exception('syscall', 1, 0, fix.core);
     expect(fix.core.getReg(2)).toBe(0);

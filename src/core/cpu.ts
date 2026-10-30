@@ -180,6 +180,9 @@ export class CpuR3000A implements Cpu {
             this.nextPcValue = (this.pcValue + 4) >>> 0;
           }
           this.wasStub = this.stubOf(this.pcValue);
+          if (this.haltedFlag) {
+            return consumed;
+          }
           continue;
         }
       }
@@ -921,10 +924,15 @@ export class CpuR3000A implements Cpu {
     const delay = wasDelayed ? 1 : 0;
     this.epcV = ((wasDelayed ? pc0 - 4 : pc0) >>> 0);
     this.causeV = ((this.causeV & CAUSE_KEEP) | (exCodeOf(kind) << 2) | (delay << 31)) >>> 0;
+    const pcBefore = this.pcValue;
     const nextBefore = this.nextPcValue;
     this.hooks.exception(kind, code, addr, this.core);
     this.inDelay = false;
-    if (this.nextPcValue === nextBefore) {
+    const redirected = this.pcValue !== pcBefore || this.nextPcValue !== nextBefore;
+    if (!redirected && kind !== 'interrupt') {
+      this.pcValue = nextBefore >>> 0;
+      this.nextPcValue = (this.pcValue + 4) >>> 0;
+    } else if (this.nextPcValue === nextBefore) {
       this.nextPcValue = (this.pcValue + 4) >>> 0;
     }
     this.wasStub = this.stubOf(this.pcValue);
