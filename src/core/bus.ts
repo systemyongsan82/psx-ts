@@ -1,5 +1,13 @@
-import type { IrqLine, Logger, MemAccess, Scheduler } from './contracts';
-import type { IoDeviceSet } from './system';
+import type { DmaDevice, IrqLine, Logger, MemAccess, Scheduler } from './contracts';
+import type { PadState } from './pad';
+
+export interface IoDeviceSet {
+  readonly gpu: DmaDevice;
+  readonly cd: DmaDevice;
+  readonly spu: DmaDevice;
+  readonly mdec: DmaDevice;
+  readonly pad: PadState;
+}
 
 export class Bus implements MemAccess {
   line = 0;
