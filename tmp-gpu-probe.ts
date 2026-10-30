@@ -76,4 +76,4 @@ function dump(lo: number, hi: number): void {
   }
 }
 
-dump(0x57960, 0x579f0);
+dump(0x579f0, 0x57b00);
