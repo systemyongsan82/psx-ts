@@ -8,3 +8,7 @@ shots/
 "Resident Evil (USA)"/
 saves/
 test-discs/
+
+# user-owned images and firmware
+games/
+firmwares/

@@ -330,6 +330,67 @@ describe('mdec macroblock & DMA flow', () => {
     }
   });
 
+  it('15bpp macroblock is emitted as 16 raster rows of 16 pixels, with Y1..Y4 as the four quadrants', () => {
+    const { mdec } = makeMdec();
+    const gray15 = (level: number): number => {
+      const c = (level + 128) >> 3;
+
+      return (c << 10) | (c << 5) | c;
+    };
+    const quadrantDc = [0x00, 0x40, 0x80, 0xC0];
+
+    mdec.store32(CTRL, 0x6000_0000);
+    uploadTables(mdec, DEFAULT_TABLE, null);
+    mdec.store32(DATA, decodeCmd(3, 6));
+    mdec.store32(DATA, 0xFE00_0400);
+    mdec.store32(DATA, 0xFE00_0400);
+    for (const dc of quadrantDc) {
+      mdec.store32(DATA, ((0xFE00 << 16) | dc) >>> 0);
+    }
+
+    const out = drain(mdec);
+    const quadrantWord = (dc: number): number => {
+      const half = gray15(dc / 4);
+
+      return (half | (half << 16)) >>> 0;
+    };
+    expect(out.length).toBe(MB_WORDS_15BPP);
+    for (let row = 0; row < 16; row++) {
+      const left = quadrantWord(quadrantDc[row < 8 ? 0 : 2]);
+      const right = quadrantWord(quadrantDc[row < 8 ? 1 : 3]);
+      for (let j = 0; j < 4; j++) {
+        expect(out[row * 8 + j]).toBe(left);
+        expect(out[row * 8 + 4 + j]).toBe(right);
+      }
+    }
+  });
+
+  it('24bpp macroblock is emitted as 16 raster rows of 48 bytes', () => {
+    const { mdec } = makeMdec();
+
+    mdec.store32(CTRL, 0x6000_0000);
+    uploadTables(mdec, DEFAULT_TABLE, null);
+    mdec.store32(DATA, decodeCmd(2, 6));
+    mdec.store32(DATA, 0xFE00_0400);
+    mdec.store32(DATA, 0xFE00_0400);
+    for (const dc of [0x00, 0x40, 0x80, 0xC0]) {
+      mdec.store32(DATA, ((0xFE00 << 16) | dc) >>> 0);
+    }
+
+    const out = drain(mdec);
+    const gray24 = (level: number): number => (level + 128) & 0xFF;
+    expect(out.length).toBe(MB_WORDS_24BPP);
+    const byteAt = (i: number): number => (out[i >> 2] >>> ((i & 3) * 8)) & 0xFF;
+    const levels = [[0, 16], [32, 48]];
+    for (let row = 0; row < 16; row++) {
+      for (let x = 0; x < 16; x++) {
+        const level = levels[row >> 3][x >> 3];
+        const base = row * 48 + x * 3;
+        expect([byteAt(base), byteAt(base + 1), byteAt(base + 2)]).toEqual([gray24(level), gray24(level), gray24(level)]);
+      }
+    }
+  });
+
   it('status current-block bits walk Y1..Y4 while the macroblock output drains', () => {
     const { mdec } = makeMdec();
 

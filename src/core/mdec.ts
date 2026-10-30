@@ -15,6 +15,8 @@ const EOB_HALFWORD = 0xFE00;
 const S11_MIN = -0x400;
 const S11_MAX = 0x3FF;
 const MAX_DMA_WORDS = 1 << 21;
+const MACROBLOCK_SIDE = 16;
+const MACROBLOCK_PIXELS = MACROBLOCK_SIDE * MACROBLOCK_SIDE;
 const BLOCK_WORDS_15BPP = 32;
 const BLOCK_WORDS_24BPP = 48;
 const BLOCK_WORDS_MONO_8BPP = 16;
@@ -130,10 +132,10 @@ export class MdecCore implements MdecUnit {
   private readonly cbblk = new Float64Array(64);
   private readonly blk = new Float64Array(64);
   private readonly idctScratch = new Float64Array(64);
-  private readonly pxR = new Int32Array(64);
-  private readonly pxG = new Int32Array(64);
-  private readonly pxB = new Int32Array(64);
-  private readonly rowBytes = new Uint8Array(24);
+  private readonly pxR = new Int32Array(MACROBLOCK_PIXELS);
+  private readonly pxG = new Int32Array(MACROBLOCK_PIXELS);
+  private readonly pxB = new Int32Array(MACROBLOCK_PIXELS);
+  private readonly rowBytes = new Uint8Array(MACROBLOCK_SIDE * 3);
 
   private readonly outRing = new Uint32Array(OUT_RING_WORDS);
   private outHead = 0;
@@ -503,29 +505,30 @@ export class MdecCore implements MdecUnit {
         break;
       case 2:
         this.runIdct();
-        this.pushLumaQuad(0, 0);
+        this.convertLumaQuad(0, 0);
         break;
       case 3:
         this.runIdct();
-        this.pushLumaQuad(8, 0);
+        this.convertLumaQuad(8, 0);
         break;
       case 4:
         this.runIdct();
-        this.pushLumaQuad(0, 8);
+        this.convertLumaQuad(0, 8);
         break;
       case 5:
         this.runIdct();
-        this.pushLumaQuad(8, 8);
+        this.convertLumaQuad(8, 8);
+        this.pushMacroblock();
         break;
     }
     this.inBlock = (this.inBlock + 1) % 6;
   }
 
-  private pushLumaQuad(qx: number, qy: number): void {
+  private pushMacroblock(): void {
     if (this.depth === 2) {
-      this.pushRgb24(qx, qy);
+      this.pushRgb24();
     } else {
-      this.pushRgb15(qx, qy);
+      this.pushRgb15();
     }
   }
 
@@ -609,16 +612,17 @@ export class MdecCore implements MdecUnit {
     return ((x + qx) >> 1) + (((y + qy) >> 1) << 3);
   }
 
-  private pyInts(qx: number, qy: number): void {
+  private convertLumaQuad(qx: number, qy: number): void {
     for (let y = 0; y < 8; y++) {
       for (let x = 0; x < 8; x++) {
         const yy = this.yChannel(x, y);
         const ci = this.chromaIndex(x, y, qx, qy);
         const cr = this.crblk[ci];
         const cb = this.cbblk[ci];
-        this.pxR[y * 8 + x] = Math.round(minmaxSigned8(yy + 1.402 * cr));
-        this.pxG[y * 8 + x] = Math.round(minmaxSigned8(yy - 0.3437 * cb - 0.7143 * cr));
-        this.pxB[y * 8 + x] = Math.round(minmaxSigned8(yy + 1.772 * cb));
+        const pi = (qy + y) * MACROBLOCK_SIDE + qx + x;
+        this.pxR[pi] = Math.round(minmaxSigned8(yy + 1.402 * cr));
+        this.pxG[pi] = Math.round(minmaxSigned8(yy - 0.3437 * cb - 0.7143 * cr));
+        this.pxB[pi] = Math.round(minmaxSigned8(yy + 1.772 * cb));
       }
     }
   }
@@ -648,11 +652,10 @@ export class MdecCore implements MdecUnit {
     return ((b5 << 10) | (g5 << 5) | r5 | bit15) & 0xFFFF;
   }
 
-  private pushRgb15(qx: number, qy: number): void {
-    this.pyInts(qx, qy);
-    for (let y = 0; y < 8; y++) {
-      const row = y * 8;
-      for (let j = 0; j < 4; j++) {
+  private pushRgb15(): void {
+    for (let y = 0; y < MACROBLOCK_SIDE; y++) {
+      const row = y * MACROBLOCK_SIDE;
+      for (let j = 0; j < MACROBLOCK_SIDE / 2; j++) {
         const i0 = row + j * 2;
         const i1 = i0 + 1;
         const h0 = this.pack15(this.pxR[i0], this.pxG[i0], this.pxB[i0]);
@@ -662,18 +665,17 @@ export class MdecCore implements MdecUnit {
     }
   }
 
-  private pushRgb24(qx: number, qy: number): void {
-    this.pyInts(qx, qy);
-    for (let y = 0; y < 8; y++) {
-      const row = y * 8;
+  private pushRgb24(): void {
+    for (let y = 0; y < MACROBLOCK_SIDE; y++) {
+      const row = y * MACROBLOCK_SIDE;
       let bi = 0;
-      for (let x = 0; x < 8; x++) {
+      for (let x = 0; x < MACROBLOCK_SIDE; x++) {
         const i = row + x;
         this.rowBytes[bi++] = this.byteOf(this.pxR[i]);
         this.rowBytes[bi++] = this.byteOf(this.pxG[i]);
         this.rowBytes[bi++] = this.byteOf(this.pxB[i]);
       }
-      for (let j = 0; j < 6; j++) {
+      for (let j = 0; j < 12; j++) {
         const k = j * 4;
         const b0 = this.rowBytes[k];
         const b1 = this.rowBytes[k + 1];
