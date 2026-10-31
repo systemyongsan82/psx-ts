@@ -10,19 +10,31 @@ const AUDIO_TAG = 0x4155444f;
 const AUDIO_CHUNK_FRAMES = 256;
 const MAX_AUDIO_CHUNKS_PER_FRAME = 4;
 
-const movieFlag = process.argv.indexOf('--movie');
-const moviePath = movieFlag >= 0 ? process.argv[movieFlag + 1] ?? null : null;
-const positional = movieFlag >= 0 ? process.argv.slice(2).filter((_, i) => i !== movieFlag - 2 && i !== movieFlag - 1) : process.argv.slice(2);
+let moviePath: string | null = null;
+let biosPath: string | null = null;
+const positional: Array<string> = [];
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--movie') {
+    moviePath = argv[++i] ?? null;
+  } else if (argv[i] === '--bios') {
+    biosPath = argv[++i] ?? null;
+  } else {
+    positional.push(argv[i]);
+  }
+}
 const defaultBin = moviePath === null
   ? 'games/Resident Evil (USA)/Resident Evil (USA).bin'
   : "games/Resident Evil - Director's Cut (USA)/Resident Evil - Director's Cut (USA).bin";
 const binPath = positional[0] ?? defaultBin;
 const port = Number(positional[1] ?? 7171);
+if (moviePath !== null && biosPath === null) {
+  biosPath = 'firmwares/scph1001.bin';
+}
 
 const log = new RingLogger();
-const system = moviePath === null
-  ? new PsxSystem({ binPath, cuePath: null, log })
-  : new PsxSystem({ binPath, cuePath: null, log, biosRom: new Uint8Array(readFileSync('firmwares/scph1001.bin')), timing: 'psxjin' });
+const biosRom = biosPath === null ? undefined : new Uint8Array(readFileSync(biosPath));
+const system = new PsxSystem({ binPath, cuePath: null, log, biosRom, timing: moviePath === null ? 'hardware' : 'psxjin' });
 system.boot();
 
 const movieCursor = moviePath === null ? null : new MovieCursor(parsePjm(new Uint8Array(readFileSync(moviePath))).frames, -1);
