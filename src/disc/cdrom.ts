@@ -102,6 +102,7 @@ export class Cdrom implements CdromUnit {
   private filterFile = 0;
   private filterChan = 0;
   private muted = false;
+  private demuted = false;
   private resultReady = false;
   private commandIrqPresented = false;
 
@@ -366,7 +367,7 @@ export class Cdrom implements CdromUnit {
     if (!this.reading) {
       return;
     }
-    const xaMuted = this.muted && (this.modeByte & 0x40) !== 0;
+    const xaMuted = this.demuted && (this.modeByte & 0x40) !== 0;
     if (xaMuted ? !this.resultReady : this.resultReady) {
       return;
     }
@@ -583,11 +584,13 @@ export class Cdrom implements CdromUnit {
         return;
       case 0x0B:
         this.muted = true;
+        this.demuted = false;
         this.respondAck([this.driveStat()]);
 
         return;
       case 0x0C:
         this.muted = false;
+        this.demuted = true;
         this.respondAck([this.driveStat()]);
 
         return;

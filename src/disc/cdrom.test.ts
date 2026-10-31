@@ -770,3 +770,44 @@ test('psxjin read: acking a command response while reading does not restart the 
   expect(intNumber(f)).toBe(1);
   f.img.close();
 });
+
+function startXaModeRead(f: Fixture, muteCommand: number): void {
+  sendCommand(f, muteCommand, []);
+  f.sched.advance(0x800);
+  ackAll(f);
+  sendCommand(f, 0x0E, [0x40]);
+  f.sched.advance(0x800);
+  ackAll(f);
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  f.sched.advance(0x800);
+  ackAll(f);
+  sendCommand(f, 0x06, []);
+  f.sched.advance(0x800);
+  ackAll(f);
+  f.sched.advance(0x40000);
+  expect(intNumber(f)).toBe(1);
+  drainResponse(f);
+  f.sched.advance(10_000);
+  setIndex(f, 1);
+  f.cd.store8(REG3, 0x07);
+}
+
+test('psxjin read: after Mute (cdr.Muted=0) a drained sector ack restarts the timer even with XA mode bit set', () => {
+  const f = makePsxjinDrive();
+  startXaModeRead(f, 0x0B);
+  f.sched.advance(PSXJIN_CD_TIMING.sectorCycles - 1);
+  expect(intNumber(f)).toBe(0);
+  f.sched.advance(1);
+  expect(intNumber(f)).toBe(1);
+  f.img.close();
+});
+
+test('psxjin read: after Demute (cdr.Muted=1) with XA mode a drained sector ack leaves the timer alone', () => {
+  const f = makePsxjinDrive();
+  startXaModeRead(f, 0x0C);
+  f.sched.advance(PSXJIN_CD_TIMING.sectorCycles - 10_000 - 1);
+  expect(intNumber(f)).toBe(0);
+  f.sched.advance(1);
+  expect(intNumber(f)).toBe(1);
+  f.img.close();
+});
