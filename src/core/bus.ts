@@ -428,9 +428,12 @@ export class Bus implements MemAccess {
   private icache = 0;
   private readonly rom: Uint8Array | null;
   private readonly vblankLine: number;
+  private readonly dmaWordDivisor: number | null;
+  private readonly completionDelay = new Uint32Array(7);
 
   constructor(sched: Scheduler, log: Logger, ram: Uint32Array, devices: IoDeviceSet, rom: Uint8Array | null = null, memcard1: Uint8Array | null = null, profile: TimingProfile = HARDWARE_PROFILE, memcard2: Uint8Array | null = null) {
     this.vblankLine = profile.vblankLine;
+    this.dmaWordDivisor = profile.dmaWordDivisor;
     this.rom = rom;
     this.sched = sched;
     this.log = log;
@@ -486,6 +489,15 @@ export class Bus implements MemAccess {
 
   dmaChannelDone(ch: number): void {
     if (ch < 0 || ch > 6 || !this.running[ch]) {
+      return;
+    }
+    const delay = this.completionDelay[ch];
+    if (delay > 0) {
+      this.completionDelay[ch] = 0;
+      this.sched.at(delay, () => {
+        this.dmaChannelDone(ch);
+      });
+
       return;
     }
     this.running[ch] = false;
@@ -1185,6 +1197,9 @@ export class Bus implements MemAccess {
 
       return;
     }
+    if (this.dmaWordDivisor !== null && ch === 2 && cfg.direction === 'toDevice' && cfg.mode !== 'linked') {
+      this.completionDelay[ch] = Math.max(1, Math.floor((cfg.wordsPerBlock * cfg.blockCount) / this.dmaWordDivisor));
+    }
     this.deviceFor(ch).dmaStart(this.channels[ch], cfg, this.ram);
   }
 
@@ -1193,9 +1208,15 @@ export class Bus implements MemAccess {
     this.mdecOutWords = cfg.wordsPerBlock;
     this.mdecOutBlocks = cfg.blockCount;
     this.mdecOutWaits = 0;
-    this.sched.at(Math.max(1, this.mdecOutWords), () => {
+    this.sched.at(this.mdecOutBlockCycles(), () => {
       this.mdecOutStep();
     });
+  }
+
+  private mdecOutBlockCycles(): number {
+    const divisor = this.dmaWordDivisor ?? 1;
+
+    return Math.max(1, Math.floor(this.mdecOutWords / divisor));
   }
 
   private mdecOutStep(): void {
@@ -1229,7 +1250,7 @@ export class Bus implements MemAccess {
 
       return;
     }
-    this.sched.at(words, () => {
+    this.sched.at(this.mdecOutBlockCycles(), () => {
       this.mdecOutStep();
     });
   }

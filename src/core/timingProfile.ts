@@ -37,6 +37,7 @@ export interface TimingProfile {
   readonly vblankLine: number;
   readonly cd: CdTiming;
   readonly sio: SioTiming;
+  readonly dmaWordDivisor: number | null;
   readonly secondMemoryCard: boolean;
   readonly returnFromShell: boolean;
 }
@@ -91,6 +92,7 @@ export const HARDWARE_PROFILE: TimingProfile = {
   vblankLine: 243,
   cd: HARDWARE_CD_TIMING,
   sio: HARDWARE_SIO_TIMING,
+  dmaWordDivisor: null,
   secondMemoryCard: false,
   returnFromShell: false,
 };
@@ -103,6 +105,7 @@ export const PSXJIN_PROFILE: TimingProfile = {
   vblankLine: 240,
   cd: PSXJIN_CD_TIMING,
   sio: PSXJIN_SIO_TIMING,
+  dmaWordDivisor: 8,
   secondMemoryCard: true,
   returnFromShell: true,
 };

@@ -43,6 +43,8 @@ describe('timing profiles', () => {
     expect(cd.sectorCycles).toBe(225_792);
     expect(cd.fixedSeekCycles).toBe(0x800);
     expect(PSXJIN_PROFILE.sio.byteCycles).toBe(200);
+    expect(PSXJIN_PROFILE.dmaWordDivisor).toBe(2 * 4);
+    expect(HARDWARE_PROFILE.dmaWordDivisor).toBeNull();
   });
 });
 
@@ -94,6 +96,9 @@ describe('psxjin profile on the real BIOS', () => {
     expect(handoffs).toBe(1);
     expect(system.exeStartFrame).not.toBeNull();
     expect(system.exeStartFrame).toBe(9);
+    const handOffCycle = system.exeStartCycle ?? 0;
+    expect(handOffCycle).toBeGreaterThan(9 * PSXJIN_PROFILE.frameCycles);
+    expect(handOffCycle).toBeLessThan(10 * PSXJIN_PROFILE.frameCycles);
   });
 
   test('refuses the psxjin profile without a BIOS ROM', () => {

@@ -12,6 +12,7 @@ interface ReplayArgs {
   frames: number;
   shotEvery: number;
   offset: number;
+  originShift: number;
   fastBoot: boolean;
   profile: 'hardware' | 'psxjin';
 }
@@ -25,6 +26,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
     frames: 0,
     shotEvery: 600,
     offset: 0,
+    originShift: 1,
     fastBoot: false,
     profile: 'hardware',
   };
@@ -39,6 +41,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
       case '--shot-every': args.shotEvery = Number(value); i++; break;
       case '--fast-boot': args.fastBoot = true; break;
       case '--profile': args.profile = value === 'psxjin' ? 'psxjin' : 'hardware'; i++; break;
+      case '--origin-shift': args.originShift = Number(value); i++; break;
       case '--offset': args.offset = Number(value); i++; break;
       default: break;
     }
@@ -61,8 +64,8 @@ function main(): void {
   let origin = shellReturn ? null : args.offset;
   system.onExeStart = (): void => {
     if (shellReturn) {
-      origin = system.frameNumber + 1;
-      console.log(`boot hand-off at system frame ${system.exeStartFrame} (cycle ${system.exeStartCycle}); movie frame 0 = next frame start`);
+      origin = system.frameNumber + args.originShift;
+      console.log(`boot hand-off at system frame ${system.exeStartFrame} (cycle ${system.exeStartCycle}); movie frame 0 = hand-off frame + ${args.originShift}`);
     }
   };
   let ran = 0;
