@@ -13,6 +13,7 @@ import { GpuCore } from './gpu';
 import { SpuCore } from './spu';
 import { MdecCore } from './mdec';
 import { HleBios } from './bios';
+import { SHELL_ENTRY_PC, applyExeHandoff, loadDiscExe } from './fastboot';
 
 const CPU_BURST_MAX = 8192;
 
@@ -130,11 +131,16 @@ export class PsxSystem implements System {
   readonly cpu: CpuR3000A;
   private _frame = 0;
   private readonly lowLevelBios: boolean;
+  private readonly fastBoot: boolean;
+  private awaitingShell = false;
+  exeStartFrame: number | null = null;
+  exeStartCycle: number | null = null;
 
   constructor(opts: SystemOptions) {
     this.log = opts.log ?? new RingLogger();
     this.sched = this._sched;
     this.lowLevelBios = opts.biosRom !== undefined;
+    this.fastBoot = this.lowLevelBios && opts.fastBoot === true;
     this.image = new PsxBinImage(opts.binPath, this.log);
     this.iso = new IsoImage(this.image, this.log);
     this.ram = new Uint32Array(RAM_SIZE / 4);
@@ -179,6 +185,7 @@ export class PsxSystem implements System {
     if (this.lowLevelBios) {
       this.ram.fill(0);
       this.cpu.reset(0xBFC00000);
+      this.awaitingShell = this.fastBoot;
       this.installClock();
 
       return;
@@ -216,9 +223,34 @@ export class PsxSystem implements System {
     this.sched.at(CYCLES_PER_LINE, lineTick);
   }
 
+  private handOffToDiscExe(): void {
+    this.awaitingShell = false;
+    const handoff = loadDiscExe(this.cd, this.ram, this.log);
+    if (handoff === null) {
+      this.log.error('sys', 'fast boot: disc exe could not be loaded, continuing on the BIOS shell');
+
+      return;
+    }
+    this.cpu.restore(applyExeHandoff(this.cpu.save(), handoff));
+    this.exeStartFrame = this._frame;
+    this.exeStartCycle = this.sched.now;
+    this.log.debug('sys', `fast boot: exe started at frame ${this._frame}, pc ${handoff.entryPc.toString(16)}`);
+  }
+
   runCycles(cycles: number): void {
     let remaining = cycles;
     while (remaining > 0) {
+      if (this.awaitingShell) {
+        if ((this.cpu.pc >>> 0) === SHELL_ENTRY_PC) {
+          this.handOffToDiscExe();
+        } else {
+          const stepped = this.cpu.run(1);
+          this.sched.advance(stepped);
+          remaining -= stepped;
+
+          continue;
+        }
+      }
       const next = this.sched.nextDeadline();
       const untilEvent = next === null ? remaining : Math.max(1, Math.min(next - this.sched.now, remaining));
       const budget = Math.min(untilEvent, CPU_BURST_MAX, remaining);

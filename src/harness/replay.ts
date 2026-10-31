@@ -12,6 +12,7 @@ interface ReplayArgs {
   frames: number;
   shotEvery: number;
   offset: number;
+  fastBoot: boolean;
 }
 
 function parseArgs(argv: Array<string>): ReplayArgs {
@@ -23,6 +24,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
     frames: 0,
     shotEvery: 600,
     offset: 0,
+    fastBoot: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const value = argv[i + 1] ?? '';
@@ -33,6 +35,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
       case '--out': args.outDir = value; i++; break;
       case '--frames': args.frames = Number(value); i++; break;
       case '--shot-every': args.shotEvery = Number(value); i++; break;
+      case '--fast-boot': args.fastBoot = true; break;
       case '--offset': args.offset = Number(value); i++; break;
       default: break;
     }
@@ -48,13 +51,18 @@ function main(): void {
   mkdirSync(args.outDir, { recursive: true });
   console.log(`movie "${movie.author}" ${movie.serial}: ${movie.frameCount} frames, ${movie.rerecords} rerecords; replaying ${total} frames, offset ${args.offset}`);
   const log = new RingLogger();
-  const system = new PsxSystem({ binPath: args.binPath, cuePath: null, log, biosRom: new Uint8Array(readFileSync(args.biosPath)) });
+  const system = new PsxSystem({ binPath: args.binPath, cuePath: null, log, biosRom: new Uint8Array(readFileSync(args.biosPath)), fastBoot: args.fastBoot });
   system.boot();
   const started = performance.now();
+  let reported = false;
   for (let f = 0; f < total; f++) {
     const index = f - args.offset;
     system.pad.buttons = index >= 0 && index < movie.frameCount ? movie.frames[index] : 0;
     system.runFrames(1);
+    if (args.fastBoot && !reported && system.exeStartFrame !== null) {
+      reported = true;
+      console.log(`fast boot: exe started at system frame ${system.exeStartFrame} (cycle ${system.exeStartCycle}), movie frame ${f}`);
+    }
     if ((f + 1) % args.shotEvery === 0 || f + 1 === total) {
       const frame = system.gpu.present();
       writeFileSync(`${args.outDir}/f${String(f + 1).padStart(6, '0')}.png`, encodePng(frame.width, frame.height, frame.rgba));

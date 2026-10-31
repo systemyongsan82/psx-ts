@@ -252,6 +252,7 @@ export interface SystemOptions {
   readonly cuePath: string | null;
   readonly log: Logger;
   readonly biosRom?: Uint8Array;
+  readonly fastBoot?: boolean;
 }
 
 export interface System {
