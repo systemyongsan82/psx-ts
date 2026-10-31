@@ -26,6 +26,7 @@ const FIFO_SIZE = 16;
 
 
 const IRQ_LINE = 2;
+const STOPS_READING_AT_WRITE: ReadonlySet<number> = new Set([0x02, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x1B, 0x1C]);
 
 const ERR_INVALID_PARAM = 0x10;
 const ERR_WRONG_PARAMS = 0x20;
@@ -105,6 +106,7 @@ export class Cdrom implements CdromUnit {
   private firstHandle: object | null = null;
   private secondHandle: object | null = null;
   private seekHandle: object | null = null;
+  private readHandle: object | null = null;
 
   constructor(
     sched: Scheduler,
@@ -464,6 +466,9 @@ export class Cdrom implements CdromUnit {
     }
     const argc = this.paramCount;
     this.paramCount = 0;
+    if (this.timing.sectorRetryCycles !== null && STOPS_READING_AT_WRITE.has(id)) {
+      this.haltReading();
+    }
     if (this.secondHandle !== null) {
       this.sched.cancel(this.secondHandle);
       this.secondHandle = null;
@@ -528,7 +533,7 @@ export class Cdrom implements CdromUnit {
 
         return;
       case 0x08:
-        this.reading = false;
+        this.haltReading();
         this.respondAck([this.driveStat() & ~ST_READING]);
         this.respondSecond(2, this.timing.stopSecond, (): Array<number> => {
           this.spindleOff = true;
@@ -540,7 +545,7 @@ export class Cdrom implements CdromUnit {
         return;
       case 0x09:
         this.respondAck([this.driveStat()]);
-        this.reading = false;
+        this.haltReading();
         this.respondSecond(2, this.timing.pauseSecond, (): Array<number> => [this.driveStat()]);
 
         return;
@@ -674,6 +679,21 @@ export class Cdrom implements CdromUnit {
     this.seeking = false;
     this.spindleOff = false;
     const period = this.sectorPeriod();
+    if (this.timing.sectorRetryCycles !== null) {
+      this.haltReading();
+      if (this.locDirty) {
+        this.locDirty = false;
+        this.nextSectorLba = this.seekTarget;
+      } else {
+        this.nextSectorLba = Math.max(0, this.nextSectorLba - 1);
+      }
+      this.reading = true;
+      this.readHandle = this.sched.at(this.timing.firstSectorCycles ?? period, () => {
+        this.onReadDue();
+      });
+
+      return;
+    }
     if (this.locDirty) {
       this.locDirty = false;
       this.nextSectorLba = this.seekTarget;
@@ -687,7 +707,7 @@ export class Cdrom implements CdromUnit {
   }
 
   private commandSeek(): void {
-    this.reading = false;
+    this.haltReading();
     this.spindleOff = false;
     this.seeking = true;
     const target = this.seekTarget;
@@ -709,7 +729,7 @@ export class Cdrom implements CdromUnit {
       this.sched.cancel(this.seekHandle);
       this.seekHandle = null;
     }
-    this.reading = false;
+    this.haltReading();
     this.seeking = false;
     this.spindleOff = false;
     this.dataPending = false;
@@ -841,7 +861,7 @@ export class Cdrom implements CdromUnit {
   // ---- sector delivery (tick is the drive clock) ----
 
   tick(cycles: number): void {
-    if (!this.reading) {
+    if (!this.reading || this.timing.sectorRetryCycles !== null) {
       return;
     }
     this.sectorTimer += cycles;
@@ -864,11 +884,40 @@ export class Cdrom implements CdromUnit {
     }
   }
 
+  private haltReading(): void {
+    this.reading = false;
+    if (this.readHandle !== null) {
+      this.sched.cancel(this.readHandle);
+      this.readHandle = null;
+    }
+  }
+
+  private onReadDue(): void {
+    this.readHandle = null;
+    const retry = this.timing.sectorRetryCycles;
+    if (!this.reading || retry === null) {
+      return;
+    }
+    if (this.pendingInts.length > 0) {
+      this.readHandle = this.sched.at(retry, () => {
+        this.onReadDue();
+      });
+
+      return;
+    }
+    this.deliverNextSector();
+    if (this.reading) {
+      this.readHandle = this.sched.at(this.sectorPeriod(), () => {
+        this.onReadDue();
+      });
+    }
+  }
+
   private deliverNextSector(): void {
     const lba = this.nextSectorLba;
     if (lba >= this.image.totalSectors || !this.image.readRawSectors(lba, 1, this.xaRaw)) {
       this.log.warn('cdrom', `read reached end of disc at lba ${lba}`);
-      this.reading = false;
+      this.haltReading();
       this.sectorTimer = 0;
       this.respondOne(this.driveStat(), 4);
 

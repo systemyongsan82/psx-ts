@@ -4,6 +4,7 @@ import { seekCycles } from './seektime';
 import { PsxBinImage } from './image';
 import { IsoImage, readEntryBytes } from './iso9660';
 import { RingLogger } from '../core/logger';
+import { PSXJIN_CD_TIMING } from '../core/timingProfile';
 import { CD_SECTOR_CYCLES, RAM_SIZE } from '../core/contracts';
 import type {
   AudioSink,
@@ -618,5 +619,74 @@ test('commands issued with a zero-length seek still complete a ReadN/Pause cycle
   expect(settle(f, 30_000).num).toBe(3);
   f.sched.advance(2_500_000);
   expect(intNumber(f)).toBe(2);
+  f.img.close();
+});
+
+function makePsxjinDrive(): Fixture {
+  const log = new RingLogger();
+  const sched = new TestSched();
+  const img = new PsxBinImage(BIN, log);
+  const iso = new IsoImage(img, log);
+  const irq = new FakeIrq();
+  const spu = new FakeSpu();
+  const cd = new Cdrom(sched, log, img, iso, spu, irq, PSXJIN_CD_TIMING);
+
+  return { cd, sched, img, iso, irq, spu, ram: new Uint32Array(RAM_SIZE / 4) };
+}
+
+test('psxjin read: ack at 0x800, first sector 0x40000 later, then every cdReadTime', () => {
+  const f = makePsxjinDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  f.sched.advance(0x800);
+  expect(intNumber(f)).toBe(3);
+  ackAll(f);
+  sendCommand(f, 0x06, []);
+  f.sched.advance(0x800);
+  expect(intNumber(f)).toBe(3);
+  ackAll(f);
+  f.sched.advance(0x40000 - 1);
+  expect(intNumber(f)).toBe(0);
+  f.sched.advance(1);
+  expect(intNumber(f)).toBe(1);
+  ackAll(f);
+  f.sched.advance(PSXJIN_CD_TIMING.sectorCycles - 1);
+  expect(intNumber(f)).toBe(0);
+  f.sched.advance(1);
+  expect(intNumber(f)).toBe(1);
+  f.img.close();
+});
+
+test('psxjin read: a sector due while an interrupt is unacknowledged retries every 0x800 cycles', () => {
+  const f = makePsxjinDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  f.sched.advance(0x800);
+  ackAll(f);
+  sendCommand(f, 0x06, []);
+  f.sched.advance(0x800);
+  ackAll(f);
+  f.sched.advance(0x40000);
+  expect(intNumber(f)).toBe(1);
+  f.sched.advance(PSXJIN_CD_TIMING.sectorCycles + 0x800 * 3);
+  expect(intNumber(f)).toBe(1);
+  ackAll(f);
+  f.sched.advance(0x800 - 1);
+  expect(intNumber(f)).toBe(0);
+  f.sched.advance(1);
+  expect(intNumber(f)).toBe(1);
+  f.img.close();
+});
+
+test('psxjin pause stops sector delivery at the command write', () => {
+  const f = makePsxjinDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  f.sched.advance(0x800);
+  ackAll(f);
+  sendCommand(f, 0x06, []);
+  f.sched.advance(0x800);
+  ackAll(f);
+  f.sched.advance(0x40000 - 100);
+  sendCommand(f, 0x09, []);
+  f.sched.advance(1000);
+  expect(intNumber(f)).not.toBe(1);
   f.img.close();
 });

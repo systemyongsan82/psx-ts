@@ -19,7 +19,7 @@ interface ReplayArgs {
 function parseArgs(argv: Array<string>): ReplayArgs {
   const args: ReplayArgs = {
     binPath: "games/Resident Evil - Director's Cut (USA)/Resident Evil - Director's Cut (USA).bin",
-    biosPath: 'firmwares/scph5501.bin',
+    biosPath: '',
     moviePath: "games/Resident Evil - Director's Cut (USA)/arukado,uroboros-redc.pjm",
     outDir: 'shots-replay',
     frames: 0,
@@ -42,6 +42,10 @@ function parseArgs(argv: Array<string>): ReplayArgs {
       case '--offset': args.offset = Number(value); i++; break;
       default: break;
     }
+  }
+
+  if (args.biosPath === '') {
+    args.biosPath = args.profile === 'psxjin' ? 'firmwares/scph1001.bin' : 'firmwares/scph5501.bin';
   }
 
   return args;
