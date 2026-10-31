@@ -26,7 +26,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
     frames: 0,
     shotEvery: 600,
     offset: 0,
-    cursorShift: 0,
+    cursorShift: -1,
     fastBoot: false,
     profile: 'hardware',
   };
