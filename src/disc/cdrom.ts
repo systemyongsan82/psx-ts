@@ -102,6 +102,7 @@ export class Cdrom implements CdromUnit {
   private filterFile = 0;
   private filterChan = 0;
   private muted = false;
+  private resultReady = false;
 
   private firstHandle: object | null = null;
   private secondHandle: object | null = null;
@@ -219,6 +220,7 @@ export class Cdrom implements CdromUnit {
       this.respPos = (this.respPos + 1) & 0x0F;
       if (this.respPos >= this.respLen) {
         this.respExhausted = true;
+        this.resultReady = false;
       }
 
       return v;
@@ -352,6 +354,25 @@ export class Cdrom implements CdromUnit {
     if ((value & 0x40) !== 0) {
       this.paramCount = 0;
     }
+    if (value === 0x07 && this.timing.sectorRetryCycles !== null) {
+      this.rescheduleReadOnAck();
+    }
+  }
+
+  private rescheduleReadOnAck(): void {
+    if (!this.reading) {
+      return;
+    }
+    const xaMuted = this.muted && (this.modeByte & 0x40) !== 0;
+    if (xaMuted ? !this.resultReady : this.resultReady) {
+      return;
+    }
+    if (this.readHandle !== null) {
+      this.sched.cancel(this.readHandle);
+    }
+    this.readHandle = this.sched.at(xaMuted ? 0 : this.sectorPeriod(), () => {
+      this.onReadDue();
+    });
   }
 
   private respBytesReady(): boolean {
@@ -367,6 +388,7 @@ export class Cdrom implements CdromUnit {
       return;
     }
     this.pendingInts.push({ num, bytes });
+    this.resultReady = true;
     if (this.pendingInts.length === 1) {
       this.presentHeadInt();
     }
