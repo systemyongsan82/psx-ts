@@ -783,3 +783,17 @@ test('gpustat bit 31 toggles per frame only in 480i and presents the full field 
   flat.frameBoundary();
   expect(gpustat(flat) >>> 31).toBe(0);
 });
+
+test('re-sending the display mode every frame does not pin the interlace field, so both line parities get drawn', () => {
+  const gpu = make();
+  gp0(gpu, [0xe1_000000]);
+  setArea(gpu, 0, 0, 63, 63);
+  for (let frame = 0; frame < 2; frame++) {
+    gp1(gpu, 0x08_000027);
+    for (let y = 0; y < 4; y++) {
+      gp0(gpu, [0x60_0000ff, vertex(0, y), (1 << 16) | 8]);
+    }
+    gpu.frameBoundary();
+  }
+  expect([0, 1, 2, 3].every((y) => px(gpu, 0, y) !== 0)).toBe(true);
+});

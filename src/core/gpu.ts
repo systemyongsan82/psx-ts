@@ -421,7 +421,6 @@ export class GpuCore implements Gpu {
       this.interlace = (value >>> 5) & 1;
       this.horiz368 = (value >>> 6) & 1;
       this.reverseFlag = (value >>> 7) & 1;
-      this.interlaceField = 0;
 
       return;
     }
