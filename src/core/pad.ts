@@ -23,4 +23,5 @@ export const PadButton = {
 
 export class PadState implements PadInput {
   buttons = 0;
+  onPoll: (() => void) | null = null;
 }

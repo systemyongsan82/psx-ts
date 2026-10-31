@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { RingLogger } from '../core/logger';
 import { PsxSystem } from '../core/system';
 import { encodePng } from './png';
-import { parsePjm } from './pjm';
+import { MovieCursor, parsePjm } from './pjm';
 
 interface ReplayArgs {
   binPath: string;
@@ -12,7 +12,6 @@ interface ReplayArgs {
   frames: number;
   shotEvery: number;
   offset: number;
-  originShift: number;
   fastBoot: boolean;
   profile: 'hardware' | 'psxjin';
 }
@@ -26,7 +25,6 @@ function parseArgs(argv: Array<string>): ReplayArgs {
     frames: 0,
     shotEvery: 600,
     offset: 0,
-    originShift: 1,
     fastBoot: false,
     profile: 'hardware',
   };
@@ -41,7 +39,6 @@ function parseArgs(argv: Array<string>): ReplayArgs {
       case '--shot-every': args.shotEvery = Number(value); i++; break;
       case '--fast-boot': args.fastBoot = true; break;
       case '--profile': args.profile = value === 'psxjin' ? 'psxjin' : 'hardware'; i++; break;
-      case '--origin-shift': args.originShift = Number(value); i++; break;
       case '--offset': args.offset = Number(value); i++; break;
       default: break;
     }
@@ -61,29 +58,44 @@ function main(): void {
   const started = performance.now();
   const shellReturn = args.profile === 'psxjin';
   const movieLength = args.frames > 0 ? Math.min(args.frames, movie.frameCount) : movie.frameCount;
+  const cursor = new MovieCursor(movie.frames);
   let origin = shellReturn ? null : args.offset;
   system.onExeStart = (): void => {
-    if (shellReturn) {
-      origin = system.frameNumber + args.originShift;
-      console.log(`boot hand-off at system frame ${system.exeStartFrame} (cycle ${system.exeStartCycle}); movie frame 0 = hand-off frame + ${args.originShift}`);
+    if (!shellReturn) {
+      return;
     }
+    origin = system.frameNumber;
+    system.pad.onPoll = (): void => {
+      system.pad.buttons = cursor.poll();
+    };
+    system.onFrameEnd = (): void => {
+      cursor.frameEnd();
+    };
+    console.log(`boot hand-off at system frame ${system.exeStartFrame} (cycle ${system.exeStartCycle}); movie cursor starts here`);
   };
   let ran = 0;
   const bootBudget = 4000;
   for (let step = 0; step < movieLength + bootBudget + args.offset; step++) {
-    const movieFrame = origin === null ? -1 : step - origin;
+    if (!shellReturn) {
+      const index = origin === null ? -1 : step - origin;
+      system.pad.buttons = index >= 0 && index < movie.frameCount ? movie.frames[index] : 0;
+    }
+    system.runFrames(1);
+    ran++;
+    const movieFrame = shellReturn ? (origin === null ? -1 : cursor.frameIndex) : step - (origin ?? 0);
     if (origin !== null && movieFrame >= movieLength) {
       break;
     }
-    system.pad.buttons = movieFrame >= 0 && movieFrame < movie.frameCount ? movie.frames[movieFrame] : 0;
-    system.runFrames(1);
-    ran++;
-    if (origin !== null && movieFrame >= 0 && ((movieFrame + 1) % args.shotEvery === 0 || movieFrame + 1 === movieLength)) {
+    const reportAt = args.shotEvery;
+    if (origin !== null && movieFrame > 0 && (shellReturn ? movieFrame % reportAt < 1 : (movieFrame + 1) % reportAt === 0)) {
       const frame = system.gpu.present();
-      writeFileSync(`${args.outDir}/f${String(movieFrame + 1).padStart(6, '0')}.png`, encodePng(frame.width, frame.height, frame.rgba));
+      writeFileSync(`${args.outDir}/f${String(movieFrame).padStart(6, '0')}.png`, encodePng(frame.width, frame.height, frame.rgba));
       const msPerFrame = (performance.now() - started) / ran;
-      console.log(`movie frame ${movieFrame + 1}/${movieLength} (system ${system.frameNumber}) pc=${(system.cpu.pc >>> 0).toString(16)} pad=${system.pad.buttons.toString(16)} ${msPerFrame.toFixed(2)} ms/frame`);
+      console.log(`movie frame ${movieFrame}/${movieLength} (system ${system.frameNumber}, lag ${cursor.lagFrames.length}) pc=${(system.cpu.pc >>> 0).toString(16)} pad=${system.pad.buttons.toString(16)} ${msPerFrame.toFixed(2)} ms/frame`);
     }
+  }
+  if (shellReturn) {
+    console.log(`lag frames: ${cursor.lagFrames.length}; first 40 at movie index: ${cursor.lagFrames.slice(0, 40).join(',')}`);
   }
   writeFileSync(`${args.outDir}/session.log`, log.dump(4096));
 }

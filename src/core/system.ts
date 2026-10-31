@@ -150,6 +150,7 @@ export class PsxSystem implements System {
   exeStartFrame: number | null = null;
   exeStartCycle: number | null = null;
   onExeStart: (() => void) | null = null;
+  onFrameEnd: (() => void) | null = null;
 
   constructor(opts: SystemOptions) {
     this.log = opts.log ?? new RingLogger();
@@ -189,6 +190,7 @@ export class PsxSystem implements System {
       irqCheck: () => this.bus.irqActive(),
       realExceptions: this.lowLevelBios,
       unitInstructionCycles: this.profile.unitInstructionCycles,
+      irqAtBranchTargetOnly: this.profile.eventsAtBranchOnly,
       hooks: {
         irqActive: () => this.bus.irqActive(),
         kuserCall: (pc, core) => this.bios.kuserCall(pc, core),
@@ -234,6 +236,7 @@ export class PsxSystem implements System {
       if (this.bus.line >= profile.linesPerFrame) {
         this.bus.line = 0;
         this._frame++;
+        this.onFrameEnd?.();
       }
       if (this.bus.line === profile.vblankLine) {
         this.bus.raiseIrq(0);
@@ -290,11 +293,10 @@ export class PsxSystem implements System {
         remaining -= untilEvent;
         continue;
       }
-      const wasDelaySlot = this.cpu.inDelaySlot;
       const consumed = this.cpu.run(budget);
       if (this.profile.eventsAtBranchOnly) {
         this.sched.elapse(consumed);
-        if (wasDelaySlot) {
+        if (this.cpu.atBranchTarget) {
           this.sched.fireDue();
         }
       } else {

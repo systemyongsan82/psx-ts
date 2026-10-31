@@ -136,6 +136,7 @@ export interface CpuDeps {
   hooks: CpuHooks;
   realExceptions?: boolean;
   unitInstructionCycles?: boolean;
+  irqAtBranchTargetOnly?: boolean;
 }
 
 export interface Cpu {

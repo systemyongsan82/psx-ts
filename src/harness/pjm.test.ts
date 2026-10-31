@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { PadButton } from '../core/pad';
-import { parsePjm } from './pjm';
+import { MovieCursor, parsePjm } from './pjm';
 
 const MOVIE = "games/Resident Evil - Director's Cut (USA)/arukado,uroboros-redc.pjm";
 
@@ -63,5 +63,43 @@ describe('parsePjm', () => {
     }
     expect(first).toBe(346);
     expect(movie.frames[first]).toBe(PadButton.Start);
+  });
+});
+
+describe('MovieCursor latch', () => {
+  const frames = Uint16Array.from([0x1, 0x2, 0x4, 0x8]);
+
+  test('two polls in one frame return the same line and consume one', () => {
+    const cursor = new MovieCursor(frames);
+    expect(cursor.poll()).toBe(0x1);
+    expect(cursor.poll()).toBe(0x1);
+    expect(cursor.frameIndex).toBe(1);
+    cursor.frameEnd();
+    expect(cursor.lagFrames).toEqual([]);
+  });
+
+  test('a frame without a poll consumes one line as a lag frame', () => {
+    const cursor = new MovieCursor(frames);
+    cursor.frameEnd();
+    expect(cursor.lagFrames).toEqual([0]);
+    expect(cursor.frameIndex).toBe(1);
+  });
+
+  test('the first poll after a lag frame takes the next line', () => {
+    const cursor = new MovieCursor(frames);
+    cursor.frameEnd();
+    expect(cursor.poll()).toBe(0x2);
+    cursor.frameEnd();
+    expect(cursor.poll()).toBe(0x4);
+    expect(cursor.lagFrames).toEqual([0]);
+  });
+
+  test('past the end of the movie the pad reads as released', () => {
+    const cursor = new MovieCursor(frames);
+    for (let i = 0; i < 4; i++) {
+      cursor.poll();
+      cursor.frameEnd();
+    }
+    expect(cursor.poll()).toBe(0);
   });
 });

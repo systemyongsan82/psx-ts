@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { CYCLES_PER_LINE, FRAME_CYCLES } from './contracts';
 import { returnFromShell, SHELL_ENTRY_PC } from './fastboot';
 import { RingLogger } from './logger';
-import { HARDWARE_PROFILE, PSXJIN_PROFILE, lineDelayCycles, profileFor } from './timingProfile';
+import { HARDWARE_PROFILE, PSXJIN_PROFILE, lineDelayCycles, profileFor, psxjinCounterRate } from './timingProfile';
 import { PsxSystem, SchedulerQueue } from './system';
 
 describe('timing profiles', () => {
@@ -51,6 +51,12 @@ describe('timing profiles', () => {
     expect(HARDWARE_PROFILE.cd.xaSectorsRaiseData).toBe(false);
     expect(PSXJIN_PROFILE.eventsAtBranchOnly).toBe(true);
     expect(HARDWARE_PROFILE.eventsAtBranchOnly).toBe(false);
+    expect(PSXJIN_PROFILE.rootCounterBias).toBe(2);
+    expect(HARDWARE_PROFILE.rootCounterBias).toBeNull();
+    expect(psxjinCounterRate(2, 0x200, false)).toBe(8);
+    expect(psxjinCounterRate(2, 0x000, false)).toBe(1);
+    expect(psxjinCounterRate(1, 0x100, false)).toBe(Math.floor((Math.floor(33_868_800 / 60) - Math.floor(Math.floor(33_868_800 / 60) / 262) * 22) / 262));
+    expect(psxjinCounterRate(0, 0x100, true)).toBe(1);
     expect(HARDWARE_PROFILE.cd.sectorRetryCycles).toBeNull();
     expect(HARDWARE_PROFILE.dmaWordDivisor).toBeNull();
   });

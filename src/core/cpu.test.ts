@@ -643,3 +643,76 @@ describe('CpuR3000A load delay slot', () => {
     expect(cpu.getReg(3)).toBe(0x1234);
   });
 });
+
+describe('CpuR3000A irqAtBranchTargetOnly (psxjin)', () => {
+  const build = (bus: RamBus, atTargetOnly: boolean): { cpu: CpuR3000A; interrupts: Array<number> } => {
+    const interrupts: Array<number> = [];
+    const cpu = new CpuR3000A({
+      bus,
+      gte: new Gte(),
+      irqAtBranchTargetOnly: atTargetOnly,
+      unitInstructionCycles: true,
+      irqCheck: () => 5,
+      hooks: {
+        irqActive: () => 5,
+        kuserCall: () => false,
+        exception: (_kind, _code, addr, core) => {
+          interrupts.push(core.pc());
+          core.setPc(addr + 4);
+        },
+      },
+    });
+
+    return { cpu, interrupts };
+  };
+
+  const program = (bus: RamBus): void => {
+    poke(bus, 0x300, itype(0x09, 0, 4, 0x401));
+    poke(bus, 0x304, mtc0Word(4, 12));
+    poke(bus, 0x308, itype(0x09, 0, 1, 1));
+    poke(bus, 0x30C, itype(0x09, 0, 2, 2));
+    poke(bus, 0x310, jtype(0x02, 0x320));
+    poke(bus, 0x314, NOP);
+    poke(bus, 0x320, itype(0x09, 0, 3, 3));
+  };
+
+  test('default: the interrupt is taken before the first instruction after mtc0', () => {
+    const bus = new RamBus();
+    program(bus);
+    const { cpu, interrupts } = build(bus, false);
+    cpu.reset(0x300);
+    cpu.run(3);
+    expect(interrupts.length).toBeGreaterThan(0);
+    expect(cpu.getReg(1)).toBe(0);
+  });
+
+  test('branch-target mode: no interrupt inside a basic block, taken at the jump target', () => {
+    const bus = new RamBus();
+    program(bus);
+    const { cpu, interrupts } = build(bus, true);
+    cpu.reset(0x300);
+    cpu.run(6);
+    expect(interrupts.length).toBe(0);
+    expect(cpu.getReg(1)).toBe(1);
+    expect(cpu.getReg(2)).toBe(2);
+    expect(cpu.atBranchTarget).toBe(true);
+    cpu.run(1);
+    expect(interrupts).toEqual([0x320]);
+    expect(cpu.getReg(3)).toBe(0);
+  });
+
+  test('a branch whose delay slot is a load still delivers the old register value at the target', () => {
+    const bus = new RamBus();
+    poke(bus, 0x400, 0x1234);
+    poke(bus, 0x300, itype(0x09, 0, 1, 7));
+    poke(bus, 0x304, jtype(0x02, 0x320));
+    poke(bus, 0x308, itype(0x23, 0, 1, 0x400));
+    poke(bus, 0x320, rtype(0x21, 1, 0, 2));
+    poke(bus, 0x324, rtype(0x21, 1, 0, 3));
+    const { cpu } = build(bus, true);
+    cpu.reset(0x300);
+    cpu.run(5);
+    expect(cpu.getReg(2)).toBe(7);
+    expect(cpu.getReg(3)).toBe(0x1234);
+  });
+});

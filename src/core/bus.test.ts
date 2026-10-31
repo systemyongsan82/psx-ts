@@ -947,3 +947,72 @@ describe('Bus MDEC busy bit after DMA1 (psxjin profile)', () => {
     expect(h.bus.load32(IO + 0x824) & 0x2000_0000).toBe(0);
   });
 });
+
+describe('Bus DMA2 completion (psxjin profile)', () => {
+  const build = (profile: typeof PSXJIN_PROFILE): { bus: Bus; sched: FakeScheduler } => {
+    const router = new IrqRouter();
+    const device = new FakeDmaDevice(router);
+    const devices: IoDeviceSet = { gpu: device, cd: device, spu: device, mdec: new FakeMdec(), pad: new PadState() };
+    const sched = new FakeScheduler();
+    const bus = new Bus(sched, new RingLogger(), new Uint32Array(RAM_SIZE / 4), devices, null, null, profile, null);
+    router.dmaDoneSink = (ch) => bus.dmaChannelDone(ch);
+    bus.store32(IO + 0xF0, 0x07654321 | 0x800);
+
+    return { bus, sched };
+  };
+
+  it('block transfer to the GPU completes after words/8 cycles', () => {
+    const h = build(PSXJIN_PROFILE);
+    h.bus.store32(IO + 0xA0, 0x3000);
+    h.bus.store32(IO + 0xA4, (1 << 16) | 64);
+    h.bus.store32(IO + 0xA8, 0x01000201);
+    expect(h.bus.load32(IO + 0xA8) & CHCR_BUSY_MASK).toBe(CHCR_BUSY_MASK);
+    h.sched.advance(7);
+    expect(h.bus.load32(IO + 0xA8) & CHCR_BUSY_MASK).toBe(CHCR_BUSY_MASK);
+    h.sched.advance(2);
+    expect(h.bus.load32(IO + 0xA8) & CHCR_BUSY_MASK).toBe(0);
+  });
+
+  it('linked-list transfer completes at once', () => {
+    const h = build(PSXJIN_PROFILE);
+    h.bus.store32(IO + 0xA0, 0x3000);
+    h.bus.store32(IO + 0xA8, 0x01000401);
+    expect(h.bus.load32(IO + 0xA8) & CHCR_BUSY_MASK).toBe(0);
+  });
+});
+
+describe('Bus root counter reads (psxjin profile)', () => {
+  const build = (profile: typeof PSXJIN_PROFILE): { bus: Bus; sched: FakeScheduler } => {
+    const router = new IrqRouter();
+    const device = new FakeDmaDevice(router);
+    const devices: IoDeviceSet = { gpu: device, cd: device, spu: device, mdec: new FakeMdec(), pad: new PadState() };
+    const sched = new FakeScheduler();
+    const bus = new Bus(sched, new RingLogger(), new Uint32Array(RAM_SIZE / 4), devices, null, null, profile, null);
+    router.dmaDoneSink = (ch) => bus.dmaChannelDone(ch);
+
+    return { bus, sched };
+  };
+
+  it('a sysclock counter advances 2 counts per cycle (BIAS)', () => {
+    const h = build(PSXJIN_PROFILE);
+    h.bus.store16(IO + 0x124, 0x0000);
+    h.sched.advance(100);
+    expect(h.bus.load16(IO + 0x120)).toBe(200);
+  });
+
+  it('writing the count rebases it', () => {
+    const h = build(PSXJIN_PROFILE);
+    h.bus.store16(IO + 0x124, 0x0008);
+    h.sched.advance(1000);
+    h.bus.store16(IO + 0x120, 50);
+    h.sched.advance(10);
+    expect(h.bus.load16(IO + 0x120)).toBe(70);
+  });
+
+  it('the hardware profile still counts from the line tick model', () => {
+    const h = build(HARDWARE_PROFILE);
+    h.bus.store16(IO + 0x124, 0x0000);
+    h.sched.advance(100);
+    expect(h.bus.load16(IO + 0x120)).toBe(0);
+  });
+});

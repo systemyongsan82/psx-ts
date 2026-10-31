@@ -35,6 +35,7 @@ export interface TimingProfile {
   readonly name: TimingProfileName;
   readonly unitInstructionCycles: boolean;
   readonly eventsAtBranchOnly: boolean;
+  readonly rootCounterBias: number | null;
   readonly frameCycles: number;
   readonly linesPerFrame: number;
   readonly vblankLine: number;
@@ -96,6 +97,7 @@ export const HARDWARE_PROFILE: TimingProfile = {
   name: 'hardware',
   unitInstructionCycles: false,
   eventsAtBranchOnly: false,
+  rootCounterBias: null,
   frameCycles: 2_150 * 263,
   linesPerFrame: 263,
   vblankLine: 243,
@@ -111,6 +113,7 @@ export const PSXJIN_PROFILE: TimingProfile = {
   name: 'psxjin',
   unitInstructionCycles: true,
   eventsAtBranchOnly: true,
+  rootCounterBias: 2,
   frameCycles: PSXJIN_FRAME_CYCLES,
   linesPerFrame: 262,
   vblankLine: 240,
@@ -134,4 +137,19 @@ export function lineDelayCycles(profile: TimingProfile, line: number, hardwareLi
   const at = (n: number): number => Math.floor((n * profile.frameCycles) / lines);
 
   return at(line + 1) - at(line);
+}
+
+const PSXJIN_VSYNC_CYCLES = Math.floor(33_868_800 / 60);
+const PSXJIN_VSYNC_END_RATE = Math.floor(PSXJIN_VSYNC_CYCLES / 262) * 22;
+
+export function psxjinCounterRate(index: number, mode: number, inVsyncEnd: boolean): number {
+  const vsyncRate = inVsyncEnd ? PSXJIN_VSYNC_END_RATE : PSXJIN_VSYNC_CYCLES - PSXJIN_VSYNC_END_RATE;
+  if (index === 0) {
+    return (mode & 0x300) === 0x100 ? Math.max(1, Math.floor(Math.floor(vsyncRate / 386) / 262)) : 1;
+  }
+  if (index === 1) {
+    return (mode & 0x300) === 0x100 ? Math.max(1, Math.floor(vsyncRate / 262)) : 1;
+  }
+
+  return (mode & 0x300) === 0x200 ? 8 : 1;
 }

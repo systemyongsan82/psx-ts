@@ -13,7 +13,7 @@ import type {
 import { CYCLES_PER_LINE, SCRATCH_SIZE } from './contracts';
 import { PadState } from './pad';
 import { MemoryCard } from './memcard';
-import { HARDWARE_PROFILE } from './timingProfile';
+import { HARDWARE_PROFILE, psxjinCounterRate } from './timingProfile';
 import type { SioTiming, TimingProfile } from './timingProfile';
 
 export interface IoDeviceSet {
@@ -54,6 +54,9 @@ interface TimerState {
   sawEdge: boolean;
   firedOnce: boolean;
   pulseRestore: boolean;
+  baseCount: number;
+  baseCycle: number;
+  rate: number;
 }
 
 interface ScheduledSlot {
@@ -67,7 +70,7 @@ interface SioReply {
 }
 
 function freshTimer(): TimerState {
-  return { counter: 0, mode: 0, target: 0, fraction: 0, sawEdge: false, firedOnce: false, pulseRestore: false };
+  return { counter: 0, mode: 0, target: 0, fraction: 0, sawEdge: false, firedOnce: false, pulseRestore: false, baseCount: 0, baseCycle: 0, rate: 1 };
 }
 
 function mergeByte(slot: number, index: number, byte: number, fieldMask: number): number {
@@ -321,6 +324,7 @@ class Sio0Port {
       if ((this.ctrl & 0x2000) === 0) {
         this.session = 'pad';
         this.step = 1;
+        this.pad.onPoll?.();
 
         return { reply: 0xFF, ack: true };
       }
@@ -431,6 +435,7 @@ export class Bus implements MemAccess {
   private readonly vblankLine: number;
   private readonly dmaWordDivisor: number | null;
   private readonly mdecBusyReleaseCycles: number | null;
+  private readonly rootCounterBias: number | null;
   private mdecBusy = false;
   private mdecBusyRelease: object | null = null;
   private readonly completionDelay = new Uint32Array(7);
@@ -439,6 +444,7 @@ export class Bus implements MemAccess {
     this.vblankLine = profile.vblankLine;
     this.dmaWordDivisor = profile.dmaWordDivisor;
     this.mdecBusyReleaseCycles = profile.mdecBusyReleaseCycles;
+    this.rootCounterBias = profile.rootCounterBias;
     this.rom = rom;
     this.sched = sched;
     this.log = log;
@@ -1035,7 +1041,9 @@ export class Bus implements MemAccess {
       const t = this.timers[row >>> 4];
       const r = row & 0xF;
       if (r < 4) {
-        return (t.counter >>> (r * 8)) & 0xFF;
+        const value = this.rootCounterBias === null ? t.counter : this.psxjinCounterValue(t);
+
+        return (value >>> (r * 8)) & 0xFF;
       }
       if (r < 8) {
         return (t.mode >>> ((r - 4) * 8)) & 0xFF;
@@ -1144,6 +1152,7 @@ export class Bus implements MemAccess {
       const r = row & 0xF;
       if (r < 4) {
         t.counter = mergeByte(t.counter, r, byte, 0xFFFF);
+        this.rebaseCounter(t, row >>> 4, t.counter);
 
         return;
       }
@@ -1154,6 +1163,7 @@ export class Bus implements MemAccess {
         t.firedOnce = false;
         t.sawEdge = false;
         t.pulseRestore = false;
+        this.rebaseCounter(t, row >>> 4, 0);
 
         return;
       }
@@ -1229,6 +1239,22 @@ export class Bus implements MemAccess {
     this.sched.at(this.mdecOutBlockCycles(), () => {
       this.mdecOutStep();
     });
+  }
+
+  private rebaseCounter(t: TimerState, idx: number, count: number): void {
+    if (this.rootCounterBias === null) {
+      return;
+    }
+    t.rate = psxjinCounterRate(idx, t.mode, this.line >= this.vblankLine);
+    t.baseCount = count & 0xFFFF;
+    t.baseCycle = this.sched.now;
+  }
+
+  private psxjinCounterValue(t: TimerState): number {
+    const bias = this.rootCounterBias ?? 1;
+    const since = (t.mode & 8) !== 0 ? this.sched.now - t.baseCycle : this.sched.now;
+
+    return (t.baseCount + bias * Math.floor(since / t.rate)) & 0xFFFF;
   }
 
   private mdecBusyStatus(q: number, size: Width): number {

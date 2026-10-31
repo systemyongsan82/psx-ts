@@ -85,6 +85,8 @@ export class CpuR3000A implements Cpu {
   private pcValue = 0;
   private nextPcValue = 4;
   private inDelay = false;
+  private takenPending = false;
+  private branchTargetReached = false;
   private loadReg1T = -1;
   private loadReg1V = 0;
   private loadReg2T = -1;
@@ -99,6 +101,7 @@ export class CpuR3000A implements Cpu {
   private haltedFlag = false;
   private readonly realExceptions: boolean;
   private readonly unitCycles: boolean;
+  private readonly irqAtBranchTargetOnly: boolean;
   private storesBlocked = false;
 
   constructor(deps: CpuDeps) {
@@ -108,6 +111,7 @@ export class CpuR3000A implements Cpu {
     this.hooks = deps.hooks;
     this.realExceptions = deps.realExceptions === true;
     this.unitCycles = deps.unitInstructionCycles === true;
+    this.irqAtBranchTargetOnly = deps.irqAtBranchTargetOnly === true;
     const self = this;
     const full: CoreAccessFull = {
       getReg: (index) => self.regs[index & 31] | 0,
@@ -177,6 +181,8 @@ export class CpuR3000A implements Cpu {
     this.pcValue = entryPc >>> 0;
     this.nextPcValue = (entryPc + 4) >>> 0;
     this.inDelay = false;
+    this.takenPending = false;
+    this.branchTargetReached = false;
     this.loadReg1T = -1;
     this.loadReg2T = -1;
     this.wasStub = false;
@@ -194,6 +200,8 @@ export class CpuR3000A implements Cpu {
     outer: while (consumed < budget) {
       const pc0 = this.pcValue >>> 0;
       const wasBranchSlot = this.inDelay;
+      const atTarget = this.branchTargetReached;
+      this.branchTargetReached = false;
       this.inDelay = false;
       if (this.loadReg2T >= 0) {
         regs[this.loadReg2T] = this.loadReg2V;
@@ -231,7 +239,7 @@ export class CpuR3000A implements Cpu {
             this.raise('interrupt', ((swPen >>> 8) & 3) * 0x100, pc0, pc0, false);
             return consumed;
           }
-          if ((srNow & 0x400) !== 0) {
+          if ((srNow & 0x400) !== 0 && (atTarget || !this.irqAtBranchTargetOnly)) {
             const lines = this.irqCheck();
             if (lines !== 0) {
               consumed += 1;
@@ -892,6 +900,13 @@ export class CpuR3000A implements Cpu {
         this.nextPcValue = takenTarget >>> 0;
       }
       this.inDelay = isBranch;
+      if (wasBranchSlot) {
+        this.branchTargetReached = this.takenPending;
+        this.takenPending = false;
+      } else {
+        this.branchTargetReached = false;
+        this.takenPending = taken;
+      }
       this.wasStub = inStub;
       consumed += unitCycles ? 1 : cyc;
     }
@@ -899,8 +914,8 @@ export class CpuR3000A implements Cpu {
     return consumed;
   }
 
-  get inDelaySlot(): boolean {
-    return this.inDelay;
+  get atBranchTarget(): boolean {
+    return this.branchTargetReached;
   }
 
   get pc(): number {
@@ -990,6 +1005,8 @@ export class CpuR3000A implements Cpu {
     }
     const pcBefore = this.pcValue;
     const nextBefore = this.nextPcValue;
+    this.takenPending = false;
+    this.branchTargetReached = false;
     this.hooks.exception(kind, code, addr, this.core);
     this.inDelay = false;
     const redirected = this.pcValue !== pcBefore || this.nextPcValue !== nextBefore;

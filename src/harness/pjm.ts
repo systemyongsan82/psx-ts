@@ -76,3 +76,37 @@ export function parsePjm(bytes: Uint8Array): PjmMovie {
     frames,
   };
 }
+
+export class MovieCursor {
+  readonly lagFrames: Array<number> = [];
+  private readonly frames: Uint16Array;
+  private index = 0;
+  private polled = false;
+  private latched = 0;
+
+  constructor(frames: Uint16Array) {
+    this.frames = frames;
+  }
+
+  get frameIndex(): number {
+    return this.index;
+  }
+
+  poll(): number {
+    if (!this.polled) {
+      this.polled = true;
+      this.latched = this.index < this.frames.length ? this.frames[this.index] : 0;
+      this.index += 1;
+    }
+
+    return this.latched;
+  }
+
+  frameEnd(): void {
+    if (!this.polled) {
+      this.lagFrames.push(this.index);
+      this.index += 1;
+    }
+    this.polled = false;
+  }
+}
