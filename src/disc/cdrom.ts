@@ -1,4 +1,6 @@
-import { CD_SECTOR_CYCLES, RAM_SIZE } from '../core/contracts';
+import { RAM_SIZE } from '../core/contracts';
+import { HARDWARE_CD_TIMING } from '../core/timingProfile';
+import type { CdTiming } from '../core/timingProfile';
 import { seekCycles } from './seektime';
 import type {
   CdFileEntry,
@@ -22,15 +24,6 @@ const RAW_MINUS_SYNC_SIZE = 0x924;
 const XA_PAYLOAD_SIZE = 2304;
 const FIFO_SIZE = 16;
 
-const FIRST_RESPONSE_CYCLES = 30_000;
-const PAUSE_SECOND_CYCLES = 2_200_000;
-const STOP_SECOND_CYCLES = 14_000_000;
-const INIT_FIRST_CYCLES = 81_000;
-const INIT_SECOND_CYCLES = 50_000;
-const GETID_SECOND_CYCLES = 100_000;
-const READTOC_SECOND_CYCLES = 5_000_000;
-const MOTORON_SECOND_CYCLES = 33_000;
-const SETSESSION_SECOND_CYCLES = 10_000_000;
 
 const IRQ_LINE = 2;
 
@@ -72,6 +65,7 @@ export class Cdrom implements CdromUnit {
   private readonly iso: Iso9660;
   private readonly spu: Spu;
   private readonly irq: IrqController;
+  private readonly timing: CdTiming;
 
   private readonly params = new Uint8Array(FIFO_SIZE);
   private paramCount = 0;
@@ -119,7 +113,9 @@ export class Cdrom implements CdromUnit {
     iso: Iso9660,
     spu: Spu,
     irq: IrqController,
+    timing: CdTiming = HARDWARE_CD_TIMING,
   ) {
+    this.timing = timing;
     this.sched = sched;
     this.log = log;
     this.image = image;
@@ -442,10 +438,21 @@ export class Cdrom implements CdromUnit {
   }
 
   private sectorPeriod(): number {
-    return (this.modeByte & 0x80) !== 0 ? Math.floor(CD_SECTOR_CYCLES / 2) : CD_SECTOR_CYCLES;
+    return (this.modeByte & 0x80) !== 0 ? Math.floor(this.timing.sectorCycles / 2) : this.timing.sectorCycles;
   }
 
   // ---- command handlers ----
+
+  private firstResponseCycles(id: number): number {
+    if (id === 0x0A || id === 0x1E) {
+      return this.timing.initFirst;
+    }
+    if (id === 0x09) {
+      return this.timing.pauseFirst;
+    }
+
+    return this.timing.firstResponse;
+  }
 
   private beginCommand(id: number): void {
     if (this.firstHandle !== null) {
@@ -466,7 +473,7 @@ export class Cdrom implements CdromUnit {
       this.seekHandle = null;
       this.seeking = false;
     }
-    this.firstHandle = this.sched.at(id === 0x0A || id === 0x1E ? INIT_FIRST_CYCLES : FIRST_RESPONSE_CYCLES, () => {
+    this.firstHandle = this.sched.at(this.firstResponseCycles(id), () => {
       this.firstHandle = null;
       this.errLatch = false;
       this.runCommand(id, argc);
@@ -501,7 +508,7 @@ export class Cdrom implements CdromUnit {
       case 0x04:
       case 0x05:
         this.respondAck([this.driveStat()]);
-        this.respondSecond(4, FIRST_RESPONSE_CYCLES, (): Array<number> => [this.driveStat()]);
+        this.respondSecond(4, this.timing.secondResponse, (): Array<number> => [this.driveStat()]);
 
         return;
       case 0x06:
@@ -514,7 +521,7 @@ export class Cdrom implements CdromUnit {
         if (this.spindleOff) {
           this.spindleOff = false;
           this.respondAck([this.driveStat()]);
-          this.respondSecond(2, MOTORON_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
+          this.respondSecond(2, this.timing.motorOnSecond, (): Array<number> => [this.driveStat()]);
         } else {
           this.respondError(ERR_WRONG_PARAMS);
         }
@@ -523,7 +530,7 @@ export class Cdrom implements CdromUnit {
       case 0x08:
         this.reading = false;
         this.respondAck([this.driveStat() & ~ST_READING]);
-        this.respondSecond(2, STOP_SECOND_CYCLES, (): Array<number> => {
+        this.respondSecond(2, this.timing.stopSecond, (): Array<number> => {
           this.spindleOff = true;
           this.snapToSector(0);
 
@@ -534,13 +541,13 @@ export class Cdrom implements CdromUnit {
       case 0x09:
         this.respondAck([this.driveStat()]);
         this.reading = false;
-        this.respondSecond(2, PAUSE_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
+        this.respondSecond(2, this.timing.pauseSecond, (): Array<number> => [this.driveStat()]);
 
         return;
       case 0x0A:
         this.commandInit();
         this.respondAck([this.driveStat()]);
-        this.respondSecond(2, INIT_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
+        this.respondSecond(2, this.timing.initSecond, (): Array<number> => [this.driveStat()]);
 
         return;
       case 0x0B:
@@ -587,7 +594,7 @@ export class Cdrom implements CdromUnit {
           return;
         }
         this.respondAck([this.driveStat()]);
-        this.respondSecond(2, SETSESSION_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
+        this.respondSecond(2, this.timing.setSessionSecond, (): Array<number> => [this.driveStat()]);
 
         return;
       case 0x13:
@@ -618,7 +625,7 @@ export class Cdrom implements CdromUnit {
         return;
       case 0x1A:
         this.respondAck([this.driveStat()]);
-        this.respondSecond(2, GETID_SECOND_CYCLES, (): Array<number> => [0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x41]);
+        this.respondSecond(2, this.timing.getIdSecond, (): Array<number> => [0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x41]);
 
         return;
       case 0x1C:
@@ -631,13 +638,13 @@ export class Cdrom implements CdromUnit {
           return;
         }
         this.respondAck([this.driveStat()]);
-        this.respondSecond(2, FIRST_RESPONSE_CYCLES, (): Array<number> => this.buildSubQ());
+        this.respondSecond(2, this.timing.secondResponse, (): Array<number> => this.buildSubQ());
 
         return;
       case 0x1E:
         this.commandInit();
         this.respondAck([this.driveStat()]);
-        this.respondSecond(2, READTOC_SECOND_CYCLES, (): Array<number> => [this.driveStat()]);
+        this.respondSecond(2, this.timing.readTocSecond, (): Array<number> => [this.driveStat()]);
 
         return;
       default:
@@ -670,7 +677,8 @@ export class Cdrom implements CdromUnit {
     if (this.locDirty) {
       this.locDirty = false;
       this.nextSectorLba = this.seekTarget;
-      this.sectorTimer = -seekCycles(this.cacheLba(), this.seekTarget, period);
+      const firstDelay = this.timing.firstSectorCycles ?? seekCycles(this.cacheLba(), this.seekTarget, period) + period;
+      this.sectorTimer = period - firstDelay;
     } else {
       this.nextSectorLba = Math.max(0, this.nextSectorLba - 1);
       this.sectorTimer = 0;
@@ -683,7 +691,7 @@ export class Cdrom implements CdromUnit {
     this.spindleOff = false;
     this.seeking = true;
     const target = this.seekTarget;
-    const latency = seekCycles(this.cacheLba(), target, this.sectorPeriod());
+    const latency = this.timing.fixedSeekCycles ?? seekCycles(this.cacheLba(), target, this.sectorPeriod());
     this.seekHandle = this.sched.at(latency, () => {
       this.seekHandle = null;
       this.finishSeek(target);

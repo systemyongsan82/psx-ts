@@ -1,7 +1,7 @@
 export const MEMCARD_SIZE = 0x2_0000;
 export const MEMCARD_SECTOR_SIZE = 0x80;
 const SECTOR_COUNT = 0x400;
-const READ_EXTRA_ACK_DELAY = 31_000;
+const DEFAULT_READ_EXTRA_ACK_DELAY = 31_000;
 const FLAG_UNREAD_DIRECTORY = 0x08;
 const END_GOOD = 0x47;
 const END_BAD_CHECKSUM = 0x4E;
@@ -64,7 +64,10 @@ export class MemoryCard {
   private out: Array<number> = [];
   private outIndex = 0;
 
-  constructor(data: Uint8Array | null) {
+  private readonly readExtraAckDelay: number;
+
+  constructor(data: Uint8Array | null, readExtraAckDelay: number = DEFAULT_READ_EXTRA_ACK_DELAY) {
+    this.readExtraAckDelay = readExtraAckDelay;
     if (data !== null && data.length !== MEMCARD_SIZE) {
       throw new Error(`memory card image must be ${MEMCARD_SIZE} bytes, got ${data.length}`);
     }
@@ -164,7 +167,7 @@ export class MemoryCard {
         return {
           reply,
           ack: !last,
-          ackDelay: this.command === 0x52 && index === 0 ? READ_EXTRA_ACK_DELAY : 0,
+          ackDelay: this.command === 0x52 && index === 0 ? this.readExtraAckDelay : 0,
         };
       }
       default:

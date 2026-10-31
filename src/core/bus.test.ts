@@ -5,6 +5,7 @@ import { RingLogger } from './logger';
 import { IrqRouter } from './irq';
 import { PadState } from './pad';
 import { Bus, type IoDeviceSet } from './bus';
+import { HARDWARE_PROFILE, PSXJIN_PROFILE } from './timingProfile';
 import type { MdecUnit } from './contracts';
 
 const IO = 0x1F801000;
@@ -848,5 +849,52 @@ describe('Bus SIO0 memory card sessions', () => {
     expect(image[0]).toBe(0x4D);
     expect(image[0x100]).toBe(0x7E);
     expect(image[0x17F]).toBe(0x7E);
+  });
+});
+
+describe('Bus SIO0 two memory cards (psxjin profile)', () => {
+  const build = (profile: typeof PSXJIN_PROFILE): { bus: Bus; sched: FakeScheduler } => {
+    const router = new IrqRouter();
+    const device = new FakeDmaDevice(router);
+    const devices: IoDeviceSet = { gpu: device, cd: device, spu: device, mdec: new FakeMdec(), pad: new PadState() };
+    const sched = new FakeScheduler();
+    const bus = new Bus(sched, new RingLogger(), new Uint32Array(RAM_SIZE / 4), devices, null, null, profile, null);
+
+    return { bus, sched };
+  };
+
+  const selectCard = (h: { bus: Bus; sched: FakeScheduler }, ctrl: number): number => {
+    h.bus.store16(IO + 0x4A, ctrl);
+    h.bus.store8(IO + 0x40, 0x81);
+    h.sched.advance(1000);
+    h.bus.load8(IO + 0x40);
+    h.bus.store8(IO + 0x40, 0x52);
+    h.sched.advance(1000);
+
+    return h.bus.load8(IO + 0x40);
+  };
+
+  it('slot 2 answers like a blank formatted card with the psxjin profile', () => {
+    const h = build(PSXJIN_PROFILE);
+    expect(selectCard(h, 0x3003)).toBe(0x08);
+    h.bus.store8(IO + 0x40, 0x00);
+    h.sched.advance(1000);
+    expect(h.bus.load8(IO + 0x40)).toBe(0x5A);
+  });
+
+  it('slot 2 stays empty with the hardware profile', () => {
+    const h = build(HARDWARE_PROFILE);
+    expect(selectCard(h, 0x3003)).toBe(0xFF);
+  });
+
+  it('psxjin SIO byte has its reply at once and raises the IRQ 200 cycles after the write', () => {
+    const h = build(PSXJIN_PROFILE);
+    h.bus.store16(IO + 0x4A, 0x1003);
+    h.bus.store8(IO + 0x40, 0x01);
+    expect(h.bus.load16(IO + 0x44) & 2).toBe(2);
+    h.sched.advance(199);
+    expect(h.bus.load16(IO + 0x44) & 0x200).toBe(0);
+    h.sched.advance(2);
+    expect(h.bus.load16(IO + 0x44) & 0x200).toBe(0x200);
   });
 });

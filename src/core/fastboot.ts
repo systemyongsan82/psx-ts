@@ -61,3 +61,15 @@ export function applyExeHandoff(ctx: CpuContext, handoff: ExeHandoff): CpuContex
     branchTarget: 0,
   };
 }
+
+export function returnFromShell(ctx: CpuContext): CpuContext {
+  const target = ctx.regs[31] >>> 0;
+
+  return {
+    ...ctx,
+    pc: target,
+    nextPc: (target + 4) >>> 0,
+    branchDelay: false,
+    branchTarget: 0,
+  };
+}

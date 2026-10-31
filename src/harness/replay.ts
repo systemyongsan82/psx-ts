@@ -13,6 +13,7 @@ interface ReplayArgs {
   shotEvery: number;
   offset: number;
   fastBoot: boolean;
+  profile: 'hardware' | 'psxjin';
 }
 
 function parseArgs(argv: Array<string>): ReplayArgs {
@@ -25,6 +26,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
     shotEvery: 600,
     offset: 0,
     fastBoot: false,
+    profile: 'hardware',
   };
   for (let i = 0; i < argv.length; i++) {
     const value = argv[i + 1] ?? '';
@@ -36,6 +38,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
       case '--frames': args.frames = Number(value); i++; break;
       case '--shot-every': args.shotEvery = Number(value); i++; break;
       case '--fast-boot': args.fastBoot = true; break;
+      case '--profile': args.profile = value === 'psxjin' ? 'psxjin' : 'hardware'; i++; break;
       case '--offset': args.offset = Number(value); i++; break;
       default: break;
     }
@@ -47,27 +50,36 @@ function parseArgs(argv: Array<string>): ReplayArgs {
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const movie = parsePjm(new Uint8Array(readFileSync(args.moviePath)));
-  const total = args.frames > 0 ? Math.min(args.frames, movie.frameCount + args.offset) : movie.frameCount + args.offset;
   mkdirSync(args.outDir, { recursive: true });
-  console.log(`movie "${movie.author}" ${movie.serial}: ${movie.frameCount} frames, ${movie.rerecords} rerecords; replaying ${total} frames, offset ${args.offset}`);
+  console.log(`movie "${movie.author}" ${movie.serial}: ${movie.frameCount} frames, ${movie.rerecords} rerecords; replaying up to ${args.frames > 0 ? args.frames : movie.frameCount} frames, offset ${args.offset}, profile ${args.profile}`);
   const log = new RingLogger();
-  const system = new PsxSystem({ binPath: args.binPath, cuePath: null, log, biosRom: new Uint8Array(readFileSync(args.biosPath)), fastBoot: args.fastBoot });
+  const system = new PsxSystem({ binPath: args.binPath, cuePath: null, log, biosRom: new Uint8Array(readFileSync(args.biosPath)), fastBoot: args.fastBoot, timing: args.profile });
   system.boot();
   const started = performance.now();
-  let reported = false;
-  for (let f = 0; f < total; f++) {
-    const index = f - args.offset;
-    system.pad.buttons = index >= 0 && index < movie.frameCount ? movie.frames[index] : 0;
-    system.runFrames(1);
-    if (args.fastBoot && !reported && system.exeStartFrame !== null) {
-      reported = true;
-      console.log(`fast boot: exe started at system frame ${system.exeStartFrame} (cycle ${system.exeStartCycle}), movie frame ${f}`);
+  const shellReturn = args.profile === 'psxjin';
+  const movieLength = args.frames > 0 ? Math.min(args.frames, movie.frameCount) : movie.frameCount;
+  let origin = shellReturn ? null : args.offset;
+  system.onExeStart = (): void => {
+    if (shellReturn) {
+      origin = system.frameNumber + 1;
+      console.log(`boot hand-off at system frame ${system.exeStartFrame} (cycle ${system.exeStartCycle}); movie frame 0 = next frame start`);
     }
-    if ((f + 1) % args.shotEvery === 0 || f + 1 === total) {
+  };
+  let ran = 0;
+  const bootBudget = 4000;
+  for (let step = 0; step < movieLength + bootBudget + args.offset; step++) {
+    const movieFrame = origin === null ? -1 : step - origin;
+    if (origin !== null && movieFrame >= movieLength) {
+      break;
+    }
+    system.pad.buttons = movieFrame >= 0 && movieFrame < movie.frameCount ? movie.frames[movieFrame] : 0;
+    system.runFrames(1);
+    ran++;
+    if (origin !== null && movieFrame >= 0 && ((movieFrame + 1) % args.shotEvery === 0 || movieFrame + 1 === movieLength)) {
       const frame = system.gpu.present();
-      writeFileSync(`${args.outDir}/f${String(f + 1).padStart(6, '0')}.png`, encodePng(frame.width, frame.height, frame.rgba));
-      const msPerFrame = (performance.now() - started) / (f + 1);
-      console.log(`frame ${f + 1}/${total} pc=${(system.cpu.pc >>> 0).toString(16)} pad=${system.pad.buttons.toString(16)} ${msPerFrame.toFixed(2)} ms/frame`);
+      writeFileSync(`${args.outDir}/f${String(movieFrame + 1).padStart(6, '0')}.png`, encodePng(frame.width, frame.height, frame.rgba));
+      const msPerFrame = (performance.now() - started) / ran;
+      console.log(`movie frame ${movieFrame + 1}/${movieLength} (system ${system.frameNumber}) pc=${(system.cpu.pc >>> 0).toString(16)} pad=${system.pad.buttons.toString(16)} ${msPerFrame.toFixed(2)} ms/frame`);
     }
   }
   writeFileSync(`${args.outDir}/session.log`, log.dump(4096));

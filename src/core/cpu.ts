@@ -98,6 +98,7 @@ export class CpuR3000A implements Cpu {
   private wasStub = false;
   private haltedFlag = false;
   private readonly realExceptions: boolean;
+  private readonly unitCycles: boolean;
   private storesBlocked = false;
 
   constructor(deps: CpuDeps) {
@@ -106,6 +107,7 @@ export class CpuR3000A implements Cpu {
     this.irqCheck = deps.irqCheck;
     this.hooks = deps.hooks;
     this.realExceptions = deps.realExceptions === true;
+    this.unitCycles = deps.unitInstructionCycles === true;
     const self = this;
     const full: CoreAccessFull = {
       getReg: (index) => self.regs[index & 31] | 0,
@@ -187,6 +189,7 @@ export class CpuR3000A implements Cpu {
     }
     const regs = this.regs;
     const bus = this.bus;
+    const unitCycles = this.unitCycles;
     let consumed = 0;
     outer: while (consumed < budget) {
       const pc0 = this.pcValue >>> 0;
@@ -890,7 +893,7 @@ export class CpuR3000A implements Cpu {
       }
       this.inDelay = isBranch;
       this.wasStub = inStub;
-      consumed += cyc;
+      consumed += unitCycles ? 1 : cyc;
     }
 
     return consumed;

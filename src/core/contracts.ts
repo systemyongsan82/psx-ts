@@ -135,6 +135,7 @@ export interface CpuDeps {
   irqCheck(): number;
   hooks: CpuHooks;
   realExceptions?: boolean;
+  unitInstructionCycles?: boolean;
 }
 
 export interface Cpu {
@@ -254,6 +255,8 @@ export interface SystemOptions {
   readonly biosRom?: Uint8Array;
   readonly fastBoot?: boolean;
   readonly memcard1?: Uint8Array;
+  readonly memcard2?: Uint8Array;
+  readonly timing?: 'hardware' | 'psxjin';
 }
 
 export interface System {

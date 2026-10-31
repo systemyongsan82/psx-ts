@@ -10,9 +10,11 @@ import type {
   MdecUnit,
   Scheduler,
 } from './contracts';
-import { CYCLES_PER_LINE, SCRATCH_SIZE, VBLANK_LINE } from './contracts';
+import { CYCLES_PER_LINE, SCRATCH_SIZE } from './contracts';
 import { PadState } from './pad';
 import { MemoryCard } from './memcard';
+import { HARDWARE_PROFILE } from './timingProfile';
+import type { SioTiming, TimingProfile } from './timingProfile';
 
 export interface IoDeviceSet {
   readonly gpu: IoDevice & DmaDevice;
@@ -27,7 +29,6 @@ const IO_BASE = 0x1F80_1000;
 const CACHE_CTL_BASE = 0xFFFE_0000;
 const CACHE_CTL_SIZE = 0x210;
 const HBLANK_CYCLES = CYCLES_PER_LINE >> 3;
-const ACK_IRQ_DELAY = 100;
 const ACK_WINDOW = 100;
 const RX_FIFO_CAP = 8;
 const DICTR_FORCE = 0x8000;
@@ -87,7 +88,9 @@ class Sio0Port {
 
   private readonly sched: Scheduler;
   private readonly pad: PadState;
-  private readonly card: MemoryCard;
+  private readonly cards: ReadonlyArray<MemoryCard | null>;
+  private readonly sioTiming: SioTiming;
+  private card: MemoryCard;
   private readonly sendIrq: (line: IrqLine) => void;
   private readonly rx = new Uint8Array(RX_FIFO_CAP);
   private rxCount = 0;
@@ -98,10 +101,18 @@ class Sio0Port {
   private step = 0;
   private readonly scheduled: Array<ScheduledSlot> = [];
 
-  constructor(sched: Scheduler, pad: PadState, card: MemoryCard, sendIrq: (line: IrqLine) => void) {
+  constructor(
+    sched: Scheduler,
+    pad: PadState,
+    cards: ReadonlyArray<MemoryCard | null>,
+    sioTiming: SioTiming,
+    sendIrq: (line: IrqLine) => void,
+  ) {
     this.sched = sched;
     this.pad = pad;
-    this.card = card;
+    this.cards = cards;
+    this.sioTiming = sioTiming;
+    this.card = cards[0] ?? new MemoryCard(null);
     this.sendIrq = sendIrq;
   }
 
@@ -230,6 +241,9 @@ class Sio0Port {
   }
 
   private byteCycles(): number {
+    if (this.sioTiming.byteCycles !== null) {
+      return this.sioTiming.byteCycles;
+    }
     const reload = Math.max(1, this.baud & 0xFFFF);
     const factorSel = this.mode & 3;
     const factor = factorSel === 2 ? 16 : factorSel === 3 ? 64 : 1;
@@ -261,22 +275,28 @@ class Sio0Port {
     }
 
     const r = this.nextReply(byte);
-    const delay = this.byteCycles();
-    this.later(delay, () => {
+    const immediate = this.sioTiming.replyImmediate;
+    const delay = immediate ? this.byteCycles() - this.sioTiming.ackIrqDelay : this.byteCycles();
+    if (immediate) {
       this.pushRx(r.reply);
+    }
+    this.later(delay, () => {
+      if (!immediate) {
+        this.pushRx(r.reply);
+      }
       if ((this.ctrl & 4) !== 0) {
         this.ctrl &= ~4;
       }
       if (r.ack) {
         const pulse = (): void => {
           this.ackLow = true;
-          this.later(ACK_IRQ_DELAY, () => {
+          this.later(this.sioTiming.ackIrqDelay, () => {
             this.irqPending = true;
             if ((this.ctrl & 0x1000) !== 0) {
               this.sendIrq(7);
             }
           });
-          this.later(ACK_IRQ_DELAY + ACK_WINDOW, () => {
+          this.later(this.sioTiming.ackIrqDelay + ACK_WINDOW, () => {
             this.ackLow = false;
           });
         };
@@ -309,8 +329,10 @@ class Sio0Port {
       return { reply: 0xFF, ack: false };
     }
     if (cmd === 0x81) {
-      if ((this.ctrl & 0x2000) === 0) {
+      const selected = this.cards[(this.ctrl & 0x2000) === 0 ? 0 : 1] ?? null;
+      if (selected !== null) {
         this.session = 'card';
+        this.card = selected;
         this.card.begin();
 
         return { reply: 0xFF, ack: true };
@@ -405,8 +427,10 @@ export class Bus implements MemAccess {
   private ramSize = 0x00000B88;
   private icache = 0;
   private readonly rom: Uint8Array | null;
+  private readonly vblankLine: number;
 
-  constructor(sched: Scheduler, log: Logger, ram: Uint32Array, devices: IoDeviceSet, rom: Uint8Array | null = null, memcard1: Uint8Array | null = null) {
+  constructor(sched: Scheduler, log: Logger, ram: Uint32Array, devices: IoDeviceSet, rom: Uint8Array | null = null, memcard1: Uint8Array | null = null, profile: TimingProfile = HARDWARE_PROFILE, memcard2: Uint8Array | null = null) {
+    this.vblankLine = profile.vblankLine;
     this.rom = rom;
     this.sched = sched;
     this.log = log;
@@ -427,7 +451,7 @@ export class Bus implements MemAccess {
     this.memCtrl[6] = 0x00020943;
     this.memCtrl[7] = 0x00070777;
     this.memCtrl[8] = 0x00031125;
-    this.sio = new Sio0Port(sched, devices.pad, new MemoryCard(memcard1), (line) => {
+    this.sio = new Sio0Port(sched, devices.pad, [new MemoryCard(memcard1, profile.sio.cardReadExtraDelay), profile.secondMemoryCard ? new MemoryCard(memcard2, profile.sio.cardReadExtraDelay) : null], profile.sio, (line) => {
       this.raiseIrq(line);
     });
   }
@@ -525,8 +549,8 @@ export class Bus implements MemAccess {
         inc = t.sawEdge ? quanta : 0;
       }
     } else if (idx === 1) {
-      const inVblank = this.line >= VBLANK_LINE;
-      const atEdge = this.line === VBLANK_LINE - 1;
+      const inVblank = this.line >= this.vblankLine;
+      const atEdge = this.line === this.vblankLine - 1;
       if (!syncOn) {
         inc = quanta;
       } else if (syncMode === 0) {

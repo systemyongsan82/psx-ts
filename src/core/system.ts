@@ -1,4 +1,4 @@
-import { CYCLES_PER_LINE, FRAME_CYCLES, LINES_PER_FRAME, RAM_SIZE, VBLANK_LINE } from './contracts';
+import { CYCLES_PER_LINE, RAM_SIZE } from './contracts';
 import type { CdromUnit, DmaDevice, IoDevice, Logger, Scheduler, System, SystemOptions } from './contracts';
 import { RingLogger } from './logger';
 import { IrqRouter } from './irq';
@@ -13,7 +13,9 @@ import { GpuCore } from './gpu';
 import { SpuCore } from './spu';
 import { MdecCore } from './mdec';
 import { HleBios } from './bios';
-import { SHELL_ENTRY_PC, applyExeHandoff, loadDiscExe } from './fastboot';
+import { SHELL_ENTRY_PC, applyExeHandoff, loadDiscExe, returnFromShell } from './fastboot';
+import { lineDelayCycles, profileFor } from './timingProfile';
+import type { TimingProfile } from './timingProfile';
 
 const CPU_BURST_MAX = 8192;
 
@@ -40,9 +42,12 @@ export class SchedulerQueue implements Scheduler {
 
   cancel(handle: object): void {
     const i = this.heap.indexOf(handle as Delayed);
-    if (i >= 0) {
-      this.heap[i] = this.heap[this.heap.length - 1];
-      this.heap.pop();
+    if (i < 0) {
+      return;
+    }
+    const last = this.heap.pop();
+    if (last !== undefined && i < this.heap.length) {
+      this.heap[i] = last;
       this.siftDown(i);
       this.siftUp(i);
     }
@@ -132,15 +137,21 @@ export class PsxSystem implements System {
   private _frame = 0;
   private readonly lowLevelBios: boolean;
   private readonly fastBoot: boolean;
+  private readonly profile: TimingProfile;
   private awaitingShell = false;
   exeStartFrame: number | null = null;
   exeStartCycle: number | null = null;
+  onExeStart: (() => void) | null = null;
 
   constructor(opts: SystemOptions) {
     this.log = opts.log ?? new RingLogger();
     this.sched = this._sched;
     this.lowLevelBios = opts.biosRom !== undefined;
-    this.fastBoot = this.lowLevelBios && opts.fastBoot === true;
+    this.profile = profileFor(opts.timing);
+    if (this.profile.returnFromShell && !this.lowLevelBios) {
+      throw new Error('the psxjin timing profile needs a BIOS ROM');
+    }
+    this.fastBoot = this.lowLevelBios && (opts.fastBoot === true || this.profile.returnFromShell);
     this.image = new PsxBinImage(opts.binPath, this.log);
     this.iso = new IsoImage(this.image, this.log);
     this.ram = new Uint32Array(RAM_SIZE / 4);
@@ -149,7 +160,7 @@ export class PsxSystem implements System {
     this.gpu = new GpuCore(this.sched, this.log, this.irq);
     this.spu = new SpuCore(this.sched, this.log, this.irq);
     this.mdec = new MdecCore(this.sched, this.log, this.irq);
-    this.cd = new Cdrom(this.sched, this.log, this.image, this.iso, this.spu, this.irq);
+    this.cd = new Cdrom(this.sched, this.log, this.image, this.iso, this.spu, this.irq, this.profile.cd);
     this.gte = new Gte();
     this.bios = new HleBios(this.sched, this.log, this.ram, this.iso, this.cd);
     this.bus = new Bus(this.sched, this.log, this.ram, {
@@ -158,7 +169,7 @@ export class PsxSystem implements System {
       spu: this.spu,
       mdec: this.mdec,
       pad: this.pad,
-    }, opts.biosRom ?? null, opts.memcard1 ?? null);
+    }, opts.biosRom ?? null, opts.memcard1 ?? null, this.profile, opts.memcard2 ?? null);
     this.irq.sink = (line) => this.bus.raiseIrq(line);
     this.irq.dmaDoneSink = (ch) => this.bus.dmaChannelDone(ch);
     this.bios.padInput = this.pad;
@@ -169,6 +180,7 @@ export class PsxSystem implements System {
       gte: this.gte,
       irqCheck: () => this.bus.irqActive(),
       realExceptions: this.lowLevelBios,
+      unitInstructionCycles: this.profile.unitInstructionCycles,
       hooks: {
         irqActive: () => this.bus.irqActive(),
         kuserCall: (pc, core) => this.bios.kuserCall(pc, core),
@@ -206,25 +218,36 @@ export class PsxSystem implements System {
   }
 
   private installClock(): void {
+    const profile = this.profile;
+    let lastDelay = lineDelayCycles(profile, 0, CYCLES_PER_LINE);
     const lineTick = (): void => {
       this.bus.lineTick();
       this.bus.line++;
-      if (this.bus.line >= LINES_PER_FRAME) {
+      if (this.bus.line >= profile.linesPerFrame) {
         this.bus.line = 0;
         this._frame++;
       }
-      if (this.bus.line === VBLANK_LINE) {
+      if (this.bus.line === profile.vblankLine) {
         this.bus.raiseIrq(0);
         this.gpu.frameBoundary();
       }
-      this.cd.tick(CYCLES_PER_LINE);
-      this.sched.at(CYCLES_PER_LINE, lineTick);
+      this.cd.tick(lastDelay);
+      lastDelay = lineDelayCycles(profile, this.bus.line, CYCLES_PER_LINE);
+      this.sched.at(lastDelay, lineTick);
     };
-    this.sched.at(CYCLES_PER_LINE, lineTick);
+    this.sched.at(lastDelay, lineTick);
   }
 
   private handOffToDiscExe(): void {
     this.awaitingShell = false;
+    if (this.profile.returnFromShell) {
+      this.cpu.restore(returnFromShell(this.cpu.save()));
+      this.exeStartFrame = this._frame;
+      this.exeStartCycle = this.sched.now;
+      this.onExeStart?.();
+
+      return;
+    }
     const handoff = loadDiscExe(this.cd, this.ram, this.log);
     if (handoff === null) {
       this.log.error('sys', 'fast boot: disc exe could not be loaded, continuing on the BIOS shell');
@@ -253,7 +276,7 @@ export class PsxSystem implements System {
       }
       const next = this.sched.nextDeadline();
       const untilEvent = next === null ? remaining : Math.max(1, Math.min(next - this.sched.now, remaining));
-      const budget = Math.min(untilEvent, CPU_BURST_MAX, remaining);
+      const budget = this.profile.unitInstructionCycles ? 1 : Math.min(untilEvent, CPU_BURST_MAX, remaining);
       if (this.cpu.halted) {
         this.sched.advance(untilEvent);
         remaining -= untilEvent;
@@ -267,7 +290,7 @@ export class PsxSystem implements System {
 
   runFrames(count: number): void {
     for (let i = 0; i < count; i++) {
-      this.runCycles(FRAME_CYCLES);
+      this.runCycles(this.profile.frameCycles);
     }
   }
 }
