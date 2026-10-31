@@ -120,7 +120,7 @@ class Sio0Port {
     }
     if (b < 12) {
       const raw = (this.ctrl >>> ((b - 10) * 8)) & 0xFF;
-      if (b === 11) {
+      if (b === 10) {
         return raw & ~0x50 & 0xFF;
       }
 
@@ -281,10 +281,11 @@ class Sio0Port {
       if ((this.ctrl & 0x2000) === 0) {
         this.session = 'pad';
         this.step = 1;
-      } else {
-        this.session = 'none';
-        this.step = 0;
+
+        return { reply: 0xFF, ack: true };
       }
+      this.session = 'none';
+      this.step = 0;
 
       return { reply: 0xFF, ack: false };
     }

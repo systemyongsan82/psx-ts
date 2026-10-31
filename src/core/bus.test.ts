@@ -542,6 +542,27 @@ describe('Bus SIO0 pad protocol', () => {
     expect(bus.load16(IO + 0x70) & 0x80).toBe(0);
   });
 
+  it('a connected pad acknowledges the 01h select byte so the kernel driver continues', () => {
+    const { bus, sched } = harness;
+    bus.store8(IO + 0x40, 0x01);
+    settlePad(sched);
+    expect(bus.load16(IO + 0x70) & 0x80).toBe(0x80);
+    expect(bus.load8(IO + 0x40)).toBe(0xFF);
+    bus.store32(IO + 0x70, 0);
+    bus.store16(IO + 0x4A, 0x3003);
+    bus.store8(IO + 0x40, 0x01);
+    settlePad(sched);
+    expect(bus.load16(IO + 0x70) & 0x80).toBe(0);
+  });
+
+  it('CTRL reads back the ACK interrupt enable bit and hides only the write-only ACK and RESET bits', () => {
+    const { bus } = harness;
+    bus.store16(IO + 0x4A, 0x1013);
+    expect(bus.load16(IO + 0x4A)).toBe(0x1003);
+    bus.store16(IO + 0x4A, 0x0040);
+    expect(bus.load16(IO + 0x4A) & 0x50).toBe(0);
+  });
+
   it('DATA exposes RX byte and three preview entries and pops one entry per read', () => {
     const { bus, sched } = harness;
     for (const cmd of [0x01, 0x42, 0x00]) {
