@@ -12,6 +12,7 @@ import type {
 } from './contracts';
 import { CYCLES_PER_LINE, SCRATCH_SIZE, VBLANK_LINE } from './contracts';
 import { PadState } from './pad';
+import { MemoryCard } from './memcard';
 
 export interface IoDeviceSet {
   readonly gpu: IoDevice & DmaDevice;
@@ -60,6 +61,7 @@ interface ScheduledSlot {
 interface SioReply {
   reply: number;
   ack: boolean;
+  ackDelay?: number;
 }
 
 function freshTimer(): TimerState {
@@ -85,6 +87,7 @@ class Sio0Port {
 
   private readonly sched: Scheduler;
   private readonly pad: PadState;
+  private readonly card: MemoryCard;
   private readonly sendIrq: (line: IrqLine) => void;
   private readonly rx = new Uint8Array(RX_FIFO_CAP);
   private rxCount = 0;
@@ -95,9 +98,10 @@ class Sio0Port {
   private step = 0;
   private readonly scheduled: Array<ScheduledSlot> = [];
 
-  constructor(sched: Scheduler, pad: PadState, sendIrq: (line: IrqLine) => void) {
+  constructor(sched: Scheduler, pad: PadState, card: MemoryCard, sendIrq: (line: IrqLine) => void) {
     this.sched = sched;
     this.pad = pad;
+    this.card = card;
     this.sendIrq = sendIrq;
   }
 
@@ -182,6 +186,7 @@ class Sio0Port {
 
   private deselect(): void {
     this.dropScheduled();
+    this.card.abort();
     this.rxCount = 0;
     this.rxHead = 0;
     this.session = 'none';
@@ -192,6 +197,7 @@ class Sio0Port {
 
   resetState(): void {
     this.dropScheduled();
+    this.card.abort();
     this.rxCount = 0;
     this.rxHead = 0;
     this.ackLow = false;
@@ -262,21 +268,34 @@ class Sio0Port {
         this.ctrl &= ~4;
       }
       if (r.ack) {
-        this.ackLow = true;
-        this.later(ACK_IRQ_DELAY, () => {
-          this.irqPending = true;
-          if ((this.ctrl & 0x1000) !== 0) {
-            this.sendIrq(7);
-          }
-        });
-        this.later(ACK_IRQ_DELAY + ACK_WINDOW, () => {
-          this.ackLow = false;
-        });
+        const pulse = (): void => {
+          this.ackLow = true;
+          this.later(ACK_IRQ_DELAY, () => {
+            this.irqPending = true;
+            if ((this.ctrl & 0x1000) !== 0) {
+              this.sendIrq(7);
+            }
+          });
+          this.later(ACK_IRQ_DELAY + ACK_WINDOW, () => {
+            this.ackLow = false;
+          });
+        };
+        const extra = r.ackDelay ?? 0;
+        if (extra > 0) {
+          this.later(extra, pulse);
+        } else {
+          pulse();
+        }
       }
     });
   }
 
   private nextReply(cmd: number): SioReply {
+    if (this.session === 'card' && this.card.busy) {
+      const c = this.card.exchange(cmd);
+
+      return { reply: c.reply, ack: c.ack, ackDelay: c.ackDelay };
+    }
     if (cmd === 0x01) {
       if ((this.ctrl & 0x2000) === 0) {
         this.session = 'pad';
@@ -290,10 +309,20 @@ class Sio0Port {
       return { reply: 0xFF, ack: false };
     }
     if (cmd === 0x81) {
-      this.session = 'card';
-      this.step = 1;
+      if ((this.ctrl & 0x2000) === 0) {
+        this.session = 'card';
+        this.card.begin();
+
+        return { reply: 0xFF, ack: true };
+      }
+      this.session = 'none';
 
       return { reply: 0xFF, ack: false };
+    }
+    if (this.session === 'card') {
+      const c = this.card.exchange(cmd);
+
+      return { reply: c.reply, ack: c.ack, ackDelay: c.ackDelay };
     }
     if (this.session === 'pad') {
       const step = this.step;
@@ -377,7 +406,7 @@ export class Bus implements MemAccess {
   private icache = 0;
   private readonly rom: Uint8Array | null;
 
-  constructor(sched: Scheduler, log: Logger, ram: Uint32Array, devices: IoDeviceSet, rom: Uint8Array | null = null) {
+  constructor(sched: Scheduler, log: Logger, ram: Uint32Array, devices: IoDeviceSet, rom: Uint8Array | null = null, memcard1: Uint8Array | null = null) {
     this.rom = rom;
     this.sched = sched;
     this.log = log;
@@ -398,7 +427,7 @@ export class Bus implements MemAccess {
     this.memCtrl[6] = 0x00020943;
     this.memCtrl[7] = 0x00070777;
     this.memCtrl[8] = 0x00031125;
-    this.sio = new Sio0Port(sched, devices.pad, (line) => {
+    this.sio = new Sio0Port(sched, devices.pad, new MemoryCard(memcard1), (line) => {
       this.raiseIrq(line);
     });
   }

@@ -158,7 +158,7 @@ export class PsxSystem implements System {
       spu: this.spu,
       mdec: this.mdec,
       pad: this.pad,
-    }, opts.biosRom ?? null);
+    }, opts.biosRom ?? null, opts.memcard1 ?? null);
     this.irq.sink = (line) => this.bus.raiseIrq(line);
     this.irq.dmaDoneSink = (ch) => this.bus.dmaChannelDone(ch);
     this.bios.padInput = this.pad;

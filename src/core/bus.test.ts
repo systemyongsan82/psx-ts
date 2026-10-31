@@ -576,24 +576,20 @@ describe('Bus SIO0 pad protocol', () => {
     expect(bus.load8(IO + 0x40)).toBe(0xFF);
   });
 
-  it('memcard command and slot2 selection answer idle with no ACK or IRQ7', () => {
+  it('slot 2 selection answers idle with no ACK or IRQ7 for both pad and card commands', () => {
     const { bus, sched } = harness;
-    bus.store16(IO + 0x4A, 0x1003);
-    bus.store8(IO + 0x40, 0x81);
-    settlePad(sched);
-    expect(bus.load16(IO + 0x44) & 2).toBe(2);
-    expect(bus.load8(IO + 0x40)).toBe(0xFF);
-    expect(bus.load16(IO + 0x70) & 0x80).toBe(0);
-    bus.store8(IO + 0x40, 0x00);
-    settlePad(sched);
-    expect(bus.load16(IO + 0x70) & 0x80).toBe(0);
     bus.store16(IO + 0x4A, 0x3003);
-    bus.store8(IO + 0x40, 0x01);
-    bus.store8(IO + 0x40, 0x42);
-    settlePad(sched);
-    settlePad(sched);
-    expect(bus.load16(IO + 0x70) & 0x80).toBe(0);
-    expect(bus.load8(IO + 0x40)).toBe(0xFF);
+    for (const cmd of [0x81, 0x01]) {
+      bus.store8(IO + 0x40, cmd);
+      settlePad(sched);
+      expect(bus.load16(IO + 0x70) & 0x80).toBe(0);
+      expect(bus.load8(IO + 0x40)).toBe(0xFF);
+      bus.store8(IO + 0x40, 0x52);
+      settlePad(sched);
+      settlePad(sched);
+      expect(bus.load16(IO + 0x70) & 0x80).toBe(0);
+      expect(bus.load8(IO + 0x40)).toBe(0xFF);
+    }
   });
 
   it('CTRL reset (bit6) clears mode, baud, FIFO and pending state', () => {
@@ -652,5 +648,205 @@ describe('Bus BIOS ROM mapping', () => {
   it('keeps returning 0 for the ROM region when no ROM is given', () => {
     const { bus } = makeBus();
     expect(bus.load32(0xBFC00000)).toBe(0);
+  });
+});
+
+
+describe('Bus SIO0 memory card', () => {
+  const SETTLE_LONG = 40_000;
+
+  const exchange = (h: ReturnType<typeof makeBus>, byte: number, wait = 3000): number => {
+    h.bus.store8(IO + 0x40, byte);
+    h.sched.advance(wait);
+
+    return h.bus.load8(IO + 0x40);
+  };
+
+  const begin = (h: ReturnType<typeof makeBus>, command: number): number => {
+    h.bus.store16(IO + 0x4A, 0x1003);
+    exchange(h, 0x81);
+
+    return exchange(h, command);
+  };
+
+  const readSector = (h: ReturnType<typeof makeBus>, sector: number): Array<number> => {
+    const out: Array<number> = [begin(h, 0x52)];
+    out.push(exchange(h, 0x00), exchange(h, 0x00));
+    out.push(exchange(h, sector >> 8), exchange(h, sector & 0xFF, SETTLE_LONG));
+    for (let i = 0; i < 2 + 2 + 128 + 2; i++) {
+      out.push(exchange(h, 0x00));
+    }
+
+    return out;
+  };
+
+  const writeSector = (h: ReturnType<typeof makeBus>, sector: number, data: Array<number>, checksum: number): number => {
+    begin(h, 0x57);
+    exchange(h, 0x00);
+    exchange(h, 0x00);
+    exchange(h, sector >> 8);
+    exchange(h, sector & 0xFF);
+    for (const b of data) {
+      exchange(h, b);
+    }
+    exchange(h, checksum);
+    exchange(h, 0x00);
+    exchange(h, 0x00);
+
+    return exchange(h, 0x00);
+  };
+
+  it('reads the header frame of a fresh card: MC, checksum 0Eh and end byte G', () => {
+    const h = makeBus();
+    const r = readSector(h, 0);
+    expect(r[0]).toBe(0x08);
+    expect(r[1]).toBe(0x5A);
+    expect(r[2]).toBe(0x5D);
+    expect(r[5]).toBe(0x5C);
+    expect(r[6]).toBe(0x5D);
+    expect(r[7]).toBe(0x00);
+    expect(r[8]).toBe(0x00);
+    const data = r.slice(9, 9 + 128);
+    expect(data[0]).toBe(0x4D);
+    expect(data[1]).toBe(0x43);
+    expect(data[0x7F]).toBe(0x0E);
+    expect(r[9 + 128]).toBe(data.reduce((a, b) => a ^ b, 0));
+    expect(r[9 + 129]).toBe(0x47);
+  });
+
+  it('fresh card directory frames are free (A0h) with a valid XOR checksum and no broken sectors', () => {
+    const h = makeBus();
+    const dir = readSector(h, 1).slice(9, 9 + 128);
+    expect(dir[0]).toBe(0xA0);
+    expect(dir.slice(8, 10)).toEqual([0xFF, 0xFF]);
+    expect(dir[0x7F]).toBe(dir.slice(0, 0x7F).reduce((a, b) => a ^ b, 0));
+    const broken = readSector(h, 16).slice(9, 9 + 128);
+    expect(broken.slice(0, 4)).toEqual([0xFF, 0xFF, 0xFF, 0xFF]);
+  });
+
+  it('a good write is read back and clears the unread-directory flag bit', () => {
+    const h = makeBus();
+    const data = Array.from({ length: 128 }, (_, i) => (i * 3 + 1) & 0xFF);
+    const checksum = data.reduce((a, b) => a ^ b, 0x00 ^ 0x3F);
+    expect(writeSector(h, 0x3F, data, checksum)).toBe(0x47);
+    const r = readSector(h, 0x3F);
+    expect(r[0]).toBe(0x00);
+    expect(r.slice(9, 9 + 128)).toEqual(data);
+  });
+
+  it('a write with a bad checksum ends with N and leaves the sector untouched', () => {
+    const h = makeBus();
+    const data = Array.from({ length: 128 }, () => 0x11);
+    expect(writeSector(h, 0x10, data, 0x00)).toBe(0x4E);
+    expect(readSector(h, 0x10).slice(9, 9 + 4)).toEqual([0xFF, 0xFF, 0xFF, 0xFF]);
+  });
+
+  it('an invalid sector number is answered with FFFFh and no data', () => {
+    const h = makeBus();
+    begin(h, 0x52);
+    exchange(h, 0x00);
+    exchange(h, 0x00);
+    exchange(h, 0x04);
+    exchange(h, 0x00, SETTLE_LONG);
+    exchange(h, 0x00);
+    exchange(h, 0x00);
+    expect(exchange(h, 0x00)).toBe(0xFF);
+    expect(exchange(h, 0x00)).toBe(0xFF);
+  });
+
+  it('get-id replies 5Ch 5Dh 04h 00h 00h 80h', () => {
+    const h = makeBus();
+    begin(h, 0x53);
+    exchange(h, 0x00);
+    exchange(h, 0x00);
+    const rest = [0, 0, 0, 0, 0, 0].map(() => exchange(h, 0x00));
+    expect(rest).toEqual([0x5C, 0x5D, 0x04, 0x00, 0x00, 0x80]);
+  });
+
+  it('ACKs every byte except the last, and delays the first ACK after a read command', () => {
+    const h = makeBus();
+    h.bus.store16(IO + 0x4A, 0x1003);
+    exchange(h, 0x81);
+    expect(h.bus.load16(IO + 0x70) & 0x80).toBe(0x80);
+    h.bus.store32(IO + 0x70, 0);
+    begin(h, 0x53);
+    h.bus.store32(IO + 0x70, 0);
+    for (let i = 0; i < 8; i++) {
+      h.bus.store8(IO + 0x40, 0x00);
+      h.sched.advance(3000);
+      expect(h.bus.load16(IO + 0x70) & 0x80).toBe(i < 7 ? 0x80 : 0);
+      h.bus.store32(IO + 0x70, 0);
+    }
+    const r = makeBus();
+    r.bus.store16(IO + 0x4A, 0x1003);
+    exchange(r, 0x81);
+    exchange(r, 0x52);
+    exchange(r, 0x00);
+    exchange(r, 0x00);
+    exchange(r, 0x00);
+    exchange(r, 0x00);
+    r.bus.store32(IO + 0x70, 0);
+    r.bus.store8(IO + 0x40, 0x00);
+    r.sched.advance(3000);
+    expect(r.bus.load16(IO + 0x70) & 0x80).toBe(0);
+    r.sched.advance(SETTLE_LONG);
+    expect(r.bus.load16(IO + 0x70) & 0x80).toBe(0x80);
+  });
+});
+
+describe('Bus SIO0 memory card sessions', () => {
+  it('a data byte equal to a select byte inside a card transfer does not restart the session', () => {
+    const h = makeBus();
+    h.bus.store16(IO + 0x4A, 0x1003);
+    const ex = (b: number): number => {
+      h.bus.store8(IO + 0x40, b);
+      h.sched.advance(40_000);
+
+      return h.bus.load8(IO + 0x40);
+    };
+    ex(0x81);
+    ex(0x57);
+    ex(0x00);
+    ex(0x00);
+    ex(0x00);
+    ex(0x00);
+    const data = Array.from({ length: 128 }, (_, i) => (i === 5 ? 0x81 : i === 9 ? 0x01 : 0x22));
+    for (const b of data) {
+      ex(b);
+    }
+    ex(data.reduce((a, b) => a ^ b, 0));
+    ex(0x00);
+    ex(0x00);
+    expect(ex(0x00)).toBe(0x47);
+  });
+
+  it('a card provided through the constructor is used and written in place', () => {
+    const router = new IrqRouter();
+    const device = new FakeDmaDevice(router);
+    const devices: IoDeviceSet = { gpu: device, cd: device, spu: device, mdec: new FakeMdec(), pad: new PadState() };
+    const sched = new FakeScheduler();
+    const image = new Uint8Array(0x20000);
+    image[0] = 0x4D;
+    const bus = new Bus(sched, new RingLogger(), new Uint32Array(RAM_SIZE / 4), devices, null, image);
+    bus.store16(IO + 0x4A, 0x1003);
+    const ex = (b: number): number => {
+      bus.store8(IO + 0x40, b);
+      sched.advance(40_000);
+
+      return bus.load8(IO + 0x40);
+    };
+    for (const b of [0x81, 0x57, 0x00, 0x00, 0x00, 0x02]) {
+      ex(b);
+    }
+    for (let i = 0; i < 128; i++) {
+      ex(0x7E);
+    }
+    ex(0x02);
+    ex(0x00);
+    ex(0x00);
+    expect(ex(0x00)).toBe(0x47);
+    expect(image[0]).toBe(0x4D);
+    expect(image[0x100]).toBe(0x7E);
+    expect(image[0x17F]).toBe(0x7E);
   });
 });

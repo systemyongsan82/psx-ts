@@ -253,6 +253,7 @@ export interface SystemOptions {
   readonly log: Logger;
   readonly biosRom?: Uint8Array;
   readonly fastBoot?: boolean;
+  readonly memcard1?: Uint8Array;
 }
 
 export interface System {
