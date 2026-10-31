@@ -103,6 +103,7 @@ export class Cdrom implements CdromUnit {
   private filterChan = 0;
   private muted = false;
   private resultReady = false;
+  private commandIrqPresented = false;
 
   private firstHandle: object | null = null;
   private secondHandle: object | null = null;
@@ -340,9 +341,11 @@ export class Cdrom implements CdromUnit {
   }
 
   private writeIrqFlags(value: number): void {
+    const ackedCommand = this.commandIrqPresented;
     const ackBits = value & 0x1F;
     if (ackBits !== 0 && this.pendingInts.length > 0 && (ackBits & (1 << (this.pendingInts[0].num - 1))) !== 0) {
       this.pendingInts.shift();
+      this.commandIrqPresented = false;
       this.respLen = 0;
       this.respPos = 0;
       this.respExhausted = false;
@@ -354,7 +357,7 @@ export class Cdrom implements CdromUnit {
     if ((value & 0x40) !== 0) {
       this.paramCount = 0;
     }
-    if (value === 0x07 && this.timing.sectorRetryCycles !== null) {
+    if (value === 0x07 && this.timing.sectorRetryCycles !== null && !ackedCommand) {
       this.rescheduleReadOnAck();
     }
   }
@@ -396,6 +399,7 @@ export class Cdrom implements CdromUnit {
 
   private presentHeadInt(): void {
     const head = this.pendingInts[0];
+    this.commandIrqPresented = head.num !== 1;
     this.respWin.fill(0);
     this.respPos = 0;
     this.respExhausted = false;

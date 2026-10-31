@@ -728,3 +728,45 @@ test('psxjin read: acking an unread sector response keeps the existing sector ti
   expect(intNumber(f)).toBe(1);
   f.img.close();
 });
+
+test('psxjin read: acking the READ_ACK response does not move the 0x40000 first sector', () => {
+  const f = makePsxjinDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  f.sched.advance(0x800);
+  ackAll(f);
+  sendCommand(f, 0x06, []);
+  f.sched.advance(0x800);
+  expect(intNumber(f)).toBe(3);
+  drainResponse(f);
+  ackAll(f);
+  f.sched.advance(0x40000 - 1);
+  expect(intNumber(f)).toBe(0);
+  f.sched.advance(1);
+  expect(intNumber(f)).toBe(1);
+  f.img.close();
+});
+
+test('psxjin read: acking a command response while reading does not restart the sector timer', () => {
+  const f = makePsxjinDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  f.sched.advance(0x800);
+  ackAll(f);
+  sendCommand(f, 0x06, []);
+  f.sched.advance(0x800);
+  ackAll(f);
+  f.sched.advance(0x40000);
+  drainResponse(f);
+  ackAll(f);
+  f.sched.advance(1000);
+  sendCommand(f, 0x0D, [0x80, 0x00]);
+  f.sched.advance(0x800);
+  expect(intNumber(f)).toBe(3);
+  drainResponse(f);
+  ackAll(f);
+  const elapsed = 1000 + 0x800;
+  f.sched.advance(PSXJIN_CD_TIMING.sectorCycles - elapsed - 1);
+  expect(intNumber(f)).toBe(0);
+  f.sched.advance(1);
+  expect(intNumber(f)).toBe(1);
+  f.img.close();
+});
