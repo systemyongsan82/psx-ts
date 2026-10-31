@@ -84,8 +84,15 @@ export class MovieCursor {
   private polled = false;
   private latched = 0;
 
-  constructor(frames: Uint16Array) {
+  private holdFrames = 0;
+
+  constructor(frames: Uint16Array, shift = 0) {
     this.frames = frames;
+    if (shift > 0) {
+      this.index = shift;
+    } else {
+      this.holdFrames = -shift;
+    }
   }
 
   get frameIndex(): number {
@@ -93,6 +100,9 @@ export class MovieCursor {
   }
 
   poll(): number {
+    if (this.holdFrames > 0) {
+      return 0;
+    }
     if (!this.polled) {
       this.polled = true;
       this.latched = this.index < this.frames.length ? this.frames[this.index] : 0;
@@ -103,6 +113,11 @@ export class MovieCursor {
   }
 
   frameEnd(): void {
+    if (this.holdFrames > 0) {
+      this.holdFrames -= 1;
+
+      return;
+    }
     if (!this.polled) {
       this.lagFrames.push(this.index);
       this.index += 1;

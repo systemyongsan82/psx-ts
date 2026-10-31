@@ -14,7 +14,7 @@ import { SpuCore } from './spu';
 import { MdecCore } from './mdec';
 import { HleBios } from './bios';
 import { SHELL_ENTRY_PC, applyExeHandoff, loadDiscExe, returnFromShell } from './fastboot';
-import { lineDelayCycles, profileFor } from './timingProfile';
+import { lineDelayCycles, lineStartCycles, profileFor } from './timingProfile';
 import type { TimingProfile } from './timingProfile';
 
 const CPU_BURST_MAX = 8192;
@@ -230,6 +230,8 @@ export class PsxSystem implements System {
   private installClock(): void {
     const profile = this.profile;
     let lastDelay = lineDelayCycles(profile, 0, CYCLES_PER_LINE);
+    let phaseBase = 0;
+    let phaseStartLine = 0;
     const lineTick = (): void => {
       this.bus.lineTick();
       this.bus.line++;
@@ -244,6 +246,14 @@ export class PsxSystem implements System {
       }
       this.cd.tick(lastDelay);
       lastDelay = lineDelayCycles(profile, this.bus.line, CYCLES_PER_LINE);
+      if (profile.eventsAtBranchOnly) {
+        if (this.bus.line === 0 || this.bus.line === profile.vblankLine) {
+          phaseBase = this.sched.now;
+          phaseStartLine = this.bus.line;
+        }
+        const deadline = phaseBase + lineStartCycles(profile, this.bus.line + 1) - lineStartCycles(profile, phaseStartLine);
+        lastDelay = Math.max(1, deadline - this.sched.now);
+      }
       this.sched.at(lastDelay, lineTick);
     };
     this.sched.at(lastDelay, lineTick);

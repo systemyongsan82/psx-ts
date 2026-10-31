@@ -102,4 +102,21 @@ describe('MovieCursor latch', () => {
     }
     expect(cursor.poll()).toBe(0);
   });
+
+  test('a positive shift starts that many lines in', () => {
+    const cursor = new MovieCursor(frames, 2);
+    expect(cursor.poll()).toBe(0x4);
+    expect(cursor.frameIndex).toBe(3);
+  });
+
+  test('a negative shift holds the pad released and consumes nothing for that many frames', () => {
+    const cursor = new MovieCursor(frames, -2);
+    expect(cursor.poll()).toBe(0);
+    cursor.frameEnd();
+    expect(cursor.poll()).toBe(0);
+    cursor.frameEnd();
+    expect(cursor.frameIndex).toBe(0);
+    expect(cursor.lagFrames).toEqual([]);
+    expect(cursor.poll()).toBe(0x1);
+  });
 });

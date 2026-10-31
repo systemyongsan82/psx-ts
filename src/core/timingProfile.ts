@@ -153,3 +153,7 @@ export function psxjinCounterRate(index: number, mode: number, inVsyncEnd: boole
 
   return (mode & 0x300) === 0x200 ? 8 : 1;
 }
+
+export function lineStartCycles(profile: TimingProfile, line: number): number {
+  return Math.floor((line * profile.frameCycles) / profile.linesPerFrame);
+}

@@ -12,6 +12,7 @@ interface ReplayArgs {
   frames: number;
   shotEvery: number;
   offset: number;
+  cursorShift: number;
   fastBoot: boolean;
   profile: 'hardware' | 'psxjin';
 }
@@ -25,6 +26,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
     frames: 0,
     shotEvery: 600,
     offset: 0,
+    cursorShift: 0,
     fastBoot: false,
     profile: 'hardware',
   };
@@ -39,6 +41,7 @@ function parseArgs(argv: Array<string>): ReplayArgs {
       case '--shot-every': args.shotEvery = Number(value); i++; break;
       case '--fast-boot': args.fastBoot = true; break;
       case '--profile': args.profile = value === 'psxjin' ? 'psxjin' : 'hardware'; i++; break;
+      case '--cursor-shift': args.cursorShift = Number(value); i++; break;
       case '--offset': args.offset = Number(value); i++; break;
       default: break;
     }
@@ -62,7 +65,7 @@ function main(): void {
   const started = performance.now();
   const shellReturn = args.profile === 'psxjin';
   const movieLength = args.frames > 0 ? Math.min(args.frames, movie.frameCount) : movie.frameCount;
-  const cursor = new MovieCursor(movie.frames);
+  const cursor = new MovieCursor(movie.frames, args.cursorShift);
   let origin = shellReturn ? null : args.offset;
   system.onExeStart = (): void => {
     if (!shellReturn) {
