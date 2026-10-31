@@ -21,6 +21,7 @@ export interface CdTiming {
   readonly firstSectorCycles: number | null;
   readonly fixedSeekCycles: number | null;
   readonly sectorRetryCycles: number | null;
+  readonly xaSectorsRaiseData: boolean;
 }
 
 export interface SioTiming {
@@ -33,12 +34,14 @@ export interface SioTiming {
 export interface TimingProfile {
   readonly name: TimingProfileName;
   readonly unitInstructionCycles: boolean;
+  readonly eventsAtBranchOnly: boolean;
   readonly frameCycles: number;
   readonly linesPerFrame: number;
   readonly vblankLine: number;
   readonly cd: CdTiming;
   readonly sio: SioTiming;
   readonly dmaWordDivisor: number | null;
+  readonly mdecBusyReleaseCycles: number | null;
   readonly secondMemoryCard: boolean;
   readonly returnFromShell: boolean;
 }
@@ -59,6 +62,7 @@ export const HARDWARE_CD_TIMING: CdTiming = {
   firstSectorCycles: null,
   fixedSeekCycles: null,
   sectorRetryCycles: null,
+  xaSectorsRaiseData: false,
 };
 
 const PSXJIN_RESPONSE_CYCLES = 0x800;
@@ -82,6 +86,7 @@ export const PSXJIN_CD_TIMING: CdTiming = {
   firstSectorCycles: PSXJIN_READ_START_CYCLES,
   fixedSeekCycles: PSXJIN_RESPONSE_CYCLES,
   sectorRetryCycles: PSXJIN_RESPONSE_CYCLES,
+  xaSectorsRaiseData: true,
 };
 
 export const HARDWARE_SIO_TIMING: SioTiming = { byteCycles: null, replyImmediate: false, ackIrqDelay: 100, cardReadExtraDelay: 31_000 };
@@ -90,12 +95,14 @@ export const PSXJIN_SIO_TIMING: SioTiming = { byteCycles: 200, replyImmediate: t
 export const HARDWARE_PROFILE: TimingProfile = {
   name: 'hardware',
   unitInstructionCycles: false,
+  eventsAtBranchOnly: false,
   frameCycles: 2_150 * 263,
   linesPerFrame: 263,
   vblankLine: 243,
   cd: HARDWARE_CD_TIMING,
   sio: HARDWARE_SIO_TIMING,
   dmaWordDivisor: null,
+  mdecBusyReleaseCycles: null,
   secondMemoryCard: false,
   returnFromShell: false,
 };
@@ -103,12 +110,14 @@ export const HARDWARE_PROFILE: TimingProfile = {
 export const PSXJIN_PROFILE: TimingProfile = {
   name: 'psxjin',
   unitInstructionCycles: true,
+  eventsAtBranchOnly: true,
   frameCycles: PSXJIN_FRAME_CYCLES,
   linesPerFrame: 262,
   vblankLine: 240,
   cd: PSXJIN_CD_TIMING,
   sio: PSXJIN_SIO_TIMING,
   dmaWordDivisor: 8,
+  mdecBusyReleaseCycles: 33_868,
   secondMemoryCard: true,
   returnFromShell: true,
 };

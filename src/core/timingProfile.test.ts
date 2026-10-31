@@ -4,7 +4,7 @@ import { CYCLES_PER_LINE, FRAME_CYCLES } from './contracts';
 import { returnFromShell, SHELL_ENTRY_PC } from './fastboot';
 import { RingLogger } from './logger';
 import { HARDWARE_PROFILE, PSXJIN_PROFILE, lineDelayCycles, profileFor } from './timingProfile';
-import { PsxSystem } from './system';
+import { PsxSystem, SchedulerQueue } from './system';
 
 describe('timing profiles', () => {
   test('the hardware profile keeps the existing frame and line geometry', () => {
@@ -45,6 +45,12 @@ describe('timing profiles', () => {
     expect(PSXJIN_PROFILE.sio.byteCycles).toBe(200);
     expect(PSXJIN_PROFILE.dmaWordDivisor).toBe(2 * 4);
     expect(PSXJIN_PROFILE.cd.sectorRetryCycles).toBe(0x800);
+    expect(PSXJIN_PROFILE.mdecBusyReleaseCycles).toBe(Math.floor(33_868_800 / 1000));
+    expect(HARDWARE_PROFILE.mdecBusyReleaseCycles).toBeNull();
+    expect(PSXJIN_PROFILE.cd.xaSectorsRaiseData).toBe(true);
+    expect(HARDWARE_PROFILE.cd.xaSectorsRaiseData).toBe(false);
+    expect(PSXJIN_PROFILE.eventsAtBranchOnly).toBe(true);
+    expect(HARDWARE_PROFILE.eventsAtBranchOnly).toBe(false);
     expect(HARDWARE_PROFILE.cd.sectorRetryCycles).toBeNull();
     expect(HARDWARE_PROFILE.dmaWordDivisor).toBeNull();
   });
@@ -70,6 +76,26 @@ describe('shell return', () => {
     expect(ctx.nextPc).toBe(0x8004_1238);
     expect(ctx.branchDelay).toBe(false);
     expect(ctx.sr).toBe(0x401);
+  });
+});
+
+describe('scheduler event delivery', () => {
+  test('elapse moves time without firing; fireDue fires everything due', () => {
+    const sched = new SchedulerQueue();
+    const fired: Array<number> = [];
+    sched.at(10, () => {
+      fired.push(10);
+    });
+    sched.at(30, () => {
+      fired.push(30);
+    });
+    sched.elapse(20);
+    expect(sched.now).toBe(20);
+    expect(fired).toEqual([]);
+    sched.fireDue();
+    expect(fired).toEqual([10]);
+    sched.advance(10);
+    expect(fired).toEqual([10, 30]);
   });
 });
 

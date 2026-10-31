@@ -76,13 +76,13 @@ With 282,240 cycles per frame, PSXjin delivers 2.5 sectors per frame at double s
 | CD DMA (DMA3) | completes immediately, no delay | CdRom.cpp:1066-1073 |
 | SPU DMA (DMA4) | completes immediately, no delay | PsxDma.cpp:58-59 |
 | MDEC-in DMA (DMA0) | completes immediately | Mdec.cpp:251-269 |
-| MDEC out `mdec1Interrupt` re-arm | `PSXCLK / 1000` while DMA1 still busy | Mdec.cpp:310-318 |
+| MDEC out `mdec1Interrupt` | stage 1 at `(size/4)/BIAS`: clears DMA1 CHCR busy and raises the DMA1 IRQ, re-arms `PSXCLK/1000`; stage 2 clears `mdec.status` busy (bit 29). `psxDma1` sets it. `mdecWrite1` with bit 31 resets status to 0 | Mdec.cpp:303, 310-327, 215-221 |
 | Root counter reads | count advances `BIAS * cycles / rate` (counters tick twice per cycle) | PsxCounters.cpp:356-361 |
 | Root counter 0/1 rate in hblank/dot modes | `vsync rate / 386 / 262`, `vsync rate / 262` | PsxCounters.cpp:313, 322 |
 | Movie frame boundary | `Movie.currentFrame++` at VSync End, 22 hsyncs after IRQ0 (VSync Start) | PsxCounters.cpp:129-147, 267-272 |
 | Pad value for a frame | first `PAD1_startPoll` after `iJoysToPoll = 2` (set in `execI` when `iVSyncFlag`) | plugins.cpp:446-482, PsxInterpreter.cpp:99-116 |
 
-Modelled in the psxjin profile: sector retry (`sectorRetryCycles`), GPU and MDEC-out completion (`dmaWordDivisor`). Root counter rates are not modelled; our line-driven timers advance 2150 per line, PSXjin 564,480 per frame (about 0.2% apart).
+Modelled in the psxjin profile: sector retry (`sectorRetryCycles`), GPU and MDEC-out completion (`dmaWordDivisor`), MDEC status busy bit held `mdecBusyReleaseCycles` (33,868) past DMA1 completion; the status register reads only that bit. Root counter rates are not modelled; our line-driven timers advance 2150 per line, PSXjin 564,480 per frame (about 0.2% apart).
 
 ## Memory cards
 

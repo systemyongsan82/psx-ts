@@ -63,6 +63,14 @@ export class SchedulerQueue implements Scheduler {
 
   advance(cycles: number): void {
     this._now += cycles;
+    this.fireDue();
+  }
+
+  elapse(cycles: number): void {
+    this._now += cycles;
+  }
+
+  fireDue(): void {
     while (this.heap.length > 0 && this.heap[0].deadline <= this._now) {
       const top = this.heap[0];
       this.heap[0] = this.heap[this.heap.length - 1];
@@ -282,9 +290,20 @@ export class PsxSystem implements System {
         remaining -= untilEvent;
         continue;
       }
+      const wasDelaySlot = this.cpu.inDelaySlot;
       const consumed = this.cpu.run(budget);
-      this.sched.advance(consumed);
+      if (this.profile.eventsAtBranchOnly) {
+        this.sched.elapse(consumed);
+        if (wasDelaySlot) {
+          this.sched.fireDue();
+        }
+      } else {
+        this.sched.advance(consumed);
+      }
       remaining -= consumed;
+    }
+    if (this.profile.eventsAtBranchOnly) {
+      this.sched.fireDue();
     }
   }
 

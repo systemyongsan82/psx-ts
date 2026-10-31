@@ -900,10 +900,10 @@ export class Cdrom implements CdromUnit {
           const subhead = ((raw[16] << 24) | (raw[17] << 16) | (raw[18] << 8) | raw[19]) >>> 0;
           this.spu.xaSink.xaSector(raw[17], subhead, raw.subarray(USER_DATA_OFFSET, USER_DATA_OFFSET + XA_PAYLOAD_SIZE));
         }
-
-        return;
-      }
-      if (filterActive) {
+        if (!this.timing.xaSectorsRaiseData) {
+          return;
+        }
+      } else if (filterActive && !this.timing.xaSectorsRaiseData) {
         return;
       }
     }

@@ -899,6 +899,10 @@ export class CpuR3000A implements Cpu {
     return consumed;
   }
 
+  get inDelaySlot(): boolean {
+    return this.inDelay;
+  }
+
   get pc(): number {
     return this.pcValue;
   }

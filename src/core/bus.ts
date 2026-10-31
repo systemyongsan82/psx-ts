@@ -38,6 +38,7 @@ const CHCR_BUSY = 0x0100_0000;
 const CHCR_TRIGGER = 0x1000_0000;
 const TIMER_FLAGS_MASK = 0x1800;
 const MDEC_STATUS_PORT = 0x1F801824;
+const MDEC_STATUS_BUSY = 0x2000_0000;
 const MDEC_OUT_FIFO_EMPTY = 0x8000_0000;
 const MDEC_OUT_WAIT_CYCLES = 64;
 const MDEC_OUT_MAX_WAITS = 1024;
@@ -429,11 +430,15 @@ export class Bus implements MemAccess {
   private readonly rom: Uint8Array | null;
   private readonly vblankLine: number;
   private readonly dmaWordDivisor: number | null;
+  private readonly mdecBusyReleaseCycles: number | null;
+  private mdecBusy = false;
+  private mdecBusyRelease: object | null = null;
   private readonly completionDelay = new Uint32Array(7);
 
   constructor(sched: Scheduler, log: Logger, ram: Uint32Array, devices: IoDeviceSet, rom: Uint8Array | null = null, memcard1: Uint8Array | null = null, profile: TimingProfile = HARDWARE_PROFILE, memcard2: Uint8Array | null = null) {
     this.vblankLine = profile.vblankLine;
     this.dmaWordDivisor = profile.dmaWordDivisor;
+    this.mdecBusyReleaseCycles = profile.mdecBusyReleaseCycles;
     this.rom = rom;
     this.sched = sched;
     this.log = log;
@@ -502,6 +507,9 @@ export class Bus implements MemAccess {
     }
     this.running[ch] = false;
     this.chcr[ch] = (this.chcr[ch] & ~CHCR_BUSY) >>> 0;
+    if (ch === 1 && this.mdecBusy) {
+      this.releaseMdecBusyLater();
+    }
     const end = this.endMadr[ch];
     if (end >= 0) {
       this.madr[ch] = end;
@@ -848,6 +856,9 @@ export class Bus implements MemAccess {
     }
     const mdec = this.devices.mdec;
     if ((off >= 0x820 && off < 0x828) || (off >= 0xE20 && off < 0xE28)) {
+      if (this.mdecBusyReleaseCycles !== null && (q & 4) !== 0) {
+        return this.mdecBusyStatus(q, size);
+      }
       if (size === 1) {
         return mdec.load8(q);
       }
@@ -913,6 +924,9 @@ export class Bus implements MemAccess {
     }
     const mdec = this.devices.mdec;
     if ((off >= 0x820 && off < 0x828) || (off >= 0xE20 && off < 0xE28)) {
+      if (this.mdecBusyReleaseCycles !== null && (q & 4) !== 0 && size === 4 && (v & 0x8000_0000) !== 0) {
+        this.clearMdecBusy();
+      }
       if (size === 1) {
         mdec.store8(q, v);
 
@@ -1204,12 +1218,50 @@ export class Bus implements MemAccess {
   }
 
   private startMdecOutDrain(cfg: DmaConfig): void {
+    if (this.mdecBusyReleaseCycles !== null) {
+      this.clearMdecBusy();
+      this.mdecBusy = true;
+    }
     this.mdecOutAddr = cfg.base;
     this.mdecOutWords = cfg.wordsPerBlock;
     this.mdecOutBlocks = cfg.blockCount;
     this.mdecOutWaits = 0;
     this.sched.at(this.mdecOutBlockCycles(), () => {
       this.mdecOutStep();
+    });
+  }
+
+  private mdecBusyStatus(q: number, size: Width): number {
+    const word = this.mdecBusy ? MDEC_STATUS_BUSY : 0;
+    const shifted = word >>> ((q & 3) * 8);
+    if (size === 1) {
+      return shifted & 0xFF;
+    }
+    if (size === 2) {
+      return shifted & 0xFFFF;
+    }
+
+    return shifted >>> 0;
+  }
+
+  private clearMdecBusy(): void {
+    if (this.mdecBusyRelease !== null) {
+      this.sched.cancel(this.mdecBusyRelease);
+      this.mdecBusyRelease = null;
+    }
+    this.mdecBusy = false;
+  }
+
+  private releaseMdecBusyLater(): void {
+    if (this.mdecBusyReleaseCycles === null) {
+      return;
+    }
+    if (this.mdecBusyRelease !== null) {
+      this.sched.cancel(this.mdecBusyRelease);
+    }
+    this.mdecBusyRelease = this.sched.at(this.mdecBusyReleaseCycles, () => {
+      this.mdecBusyRelease = null;
+      this.mdecBusy = false;
     });
   }
 

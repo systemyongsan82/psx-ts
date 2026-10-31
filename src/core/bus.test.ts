@@ -898,3 +898,52 @@ describe('Bus SIO0 two memory cards (psxjin profile)', () => {
     expect(h.bus.load16(IO + 0x44) & 0x200).toBe(0x200);
   });
 });
+
+describe('Bus MDEC busy bit after DMA1 (psxjin profile)', () => {
+  const build = (profile: typeof PSXJIN_PROFILE): { bus: Bus; sched: FakeScheduler; mdec: FakeMdec } => {
+    const router = new IrqRouter();
+    const device = new FakeDmaDevice(router);
+    const mdec = new FakeMdec();
+    const devices: IoDeviceSet = { gpu: device, cd: device, spu: device, mdec, pad: new PadState() };
+    const sched = new FakeScheduler();
+    const bus = new Bus(sched, new RingLogger(), new Uint32Array(RAM_SIZE / 4), devices, null, null, profile, null);
+    bus.store32(IO + 0xF0, 0x07654321 | 0x80);
+
+    return { bus, sched, mdec };
+  };
+
+  const startOutDma = (h: { bus: Bus; mdec: FakeMdec }): void => {
+    for (let k = 0; k < 8; k++) {
+      h.mdec.pushOut(k);
+    }
+    h.bus.store32(IO + 0x90, 0x2000);
+    h.bus.store32(IO + 0x94, (1 << 16) | 8);
+    h.bus.store32(IO + 0x98, 0x01000200);
+  };
+
+  it('keeps status bit 29 set for PSXCLK/1000 cycles after the DMA1 channel completes', () => {
+    const h = build(PSXJIN_PROFILE);
+    startOutDma(h);
+    expect(h.bus.load32(IO + 0x824) & 0x2000_0000).toBe(0x2000_0000);
+    h.sched.advance(1000);
+    expect(h.bus.load32(IO + 0x98) & CHCR_BUSY_MASK).toBe(0);
+    expect(h.bus.load32(IO + 0x824) & 0x2000_0000).toBe(0x2000_0000);
+    h.sched.advance(33_868);
+    expect(h.bus.load32(IO + 0x824) & 0x2000_0000).toBe(0);
+  });
+
+  it('a control reset clears the busy bit at once', () => {
+    const h = build(PSXJIN_PROFILE);
+    startOutDma(h);
+    h.sched.advance(1000);
+    h.bus.store32(IO + 0x824, 0x8000_0000);
+    expect(h.bus.load32(IO + 0x824) & 0x2000_0000).toBe(0);
+  });
+
+  it('hardware profile leaves the status word to the MDEC', () => {
+    const h = build(HARDWARE_PROFILE);
+    startOutDma(h);
+    h.sched.advance(1000);
+    expect(h.bus.load32(IO + 0x824) & 0x2000_0000).toBe(0);
+  });
+});
