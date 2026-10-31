@@ -960,6 +960,7 @@ export class Gte implements GteUnit {
   }
 
   private execute(cmd: number, sf: number, lm: number, instr: number): void {
+    this.flag = 0;
     switch (cmd) {
       case 0x01:
         this.project(0, sf, true);

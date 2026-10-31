@@ -61,6 +61,20 @@ describe('Gte cycles', () => {
 });
 
 describe('Gte projections', () => {
+  test('FLAG is cleared at the start of each command', () => {
+    const g = new Gte();
+    identityRt(g);
+    g.cop2(mtc2(0), 0x7FFF);
+    g.cop2(mtc2(1), 0x0001);
+    g.cop2(ctc2(26), 0x0200);
+    g.cop2(RTPS, 0);
+    expect(flagBits(g)).not.toBe(0);
+    g.cop2(mtc2(0), 0x0C00);
+    g.cop2(mtc2(1), 0x0800);
+    g.cop2(RTPS, 0);
+    expect(flagBits(g)).toBe(0);
+  });
+
   test('RTPS identity matrix: hand-checked fixed point', () => {
     const g = new Gte();
     identityRt(g);
