@@ -1,19 +1,42 @@
 import { serve, type ServerWebSocket } from 'bun';
+import { readFileSync } from 'node:fs';
 import { RingLogger } from '../core/logger';
 import { PsxSystem } from '../core/system';
 import { CPU_HZ, FRAME_CYCLES } from '../core/contracts';
+import { MovieCursor, parsePjm } from '../harness/pjm';
 
 const FRAME_TAG = 0x46524d45;
 const AUDIO_TAG = 0x4155444f;
 const AUDIO_CHUNK_FRAMES = 256;
 const MAX_AUDIO_CHUNKS_PER_FRAME = 4;
 
-const binPath = process.argv[2] ?? 'games/Resident Evil (USA)/Resident Evil (USA).bin';
-const port = Number(process.argv[3] ?? 7171);
+const movieFlag = process.argv.indexOf('--movie');
+const moviePath = movieFlag >= 0 ? process.argv[movieFlag + 1] ?? null : null;
+const positional = movieFlag >= 0 ? process.argv.slice(2).filter((_, i) => i !== movieFlag - 2 && i !== movieFlag - 1) : process.argv.slice(2);
+const defaultBin = moviePath === null
+  ? 'games/Resident Evil (USA)/Resident Evil (USA).bin'
+  : "games/Resident Evil - Director's Cut (USA)/Resident Evil - Director's Cut (USA).bin";
+const binPath = positional[0] ?? defaultBin;
+const port = Number(positional[1] ?? 7171);
 
 const log = new RingLogger();
-const system = new PsxSystem({ binPath, cuePath: null, log });
+const system = moviePath === null
+  ? new PsxSystem({ binPath, cuePath: null, log })
+  : new PsxSystem({ binPath, cuePath: null, log, biosRom: new Uint8Array(readFileSync('firmwares/scph1001.bin')), timing: 'psxjin' });
 system.boot();
+
+const movieCursor = moviePath === null ? null : new MovieCursor(parsePjm(new Uint8Array(readFileSync(moviePath))).frames, -1);
+if (movieCursor !== null) {
+  const cursor = movieCursor;
+  system.onExeStart = (): void => {
+    system.pad.onPoll = (): void => {
+      system.pad.buttons = cursor.poll();
+    };
+    system.onFrameEnd = (): void => {
+      cursor.frameEnd();
+    };
+  };
+}
 
 const sockets = new Set<ServerWebSocket<unknown>>();
 
@@ -66,7 +89,7 @@ serve({
     },
     message(_ws, data) {
       const parsed: unknown = JSON.parse(String(data));
-      if (parsed && typeof parsed === 'object' && 'buttons' in (parsed as object)) {
+      if (movieCursor === null && parsed && typeof parsed === 'object' && 'buttons' in (parsed as object)) {
         const buttons = Number((parsed as { buttons: unknown }).buttons);
         system.pad.buttons = buttons | 0;
       }
@@ -108,7 +131,8 @@ function tick(): void {
   framesInSecond++;
   if (now - fpsLast > 1000) {
     const fps = (framesInSecond * 1000) / (now - fpsLast);
-    console.log(`fps=${fps.toFixed(1)} frame=${system.frameNumber} coreMs=${(now - start).toFixed(1)}`);
+    const movieInfo = movieCursor === null ? '' : ` movie=${movieCursor.frameIndex}`;
+    console.log(`fps=${fps.toFixed(1)} frame=${system.frameNumber}${movieInfo} coreMs=${(now - start).toFixed(1)}`);
     framesInSecond = 0;
     fpsLast = now;
   }
