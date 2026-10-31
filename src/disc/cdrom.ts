@@ -846,7 +846,19 @@ export class Cdrom implements CdromUnit {
     }
     this.sectorTimer += cycles;
     const period = this.sectorPeriod();
+    const retry = this.timing.sectorRetryCycles;
     while (this.sectorTimer >= period) {
+      if (retry !== null) {
+        if (this.pendingInts.length > 0) {
+          this.sectorTimer = period - retry;
+
+          return;
+        }
+        this.sectorTimer = 0;
+        this.deliverNextSector();
+
+        return;
+      }
       this.sectorTimer -= period;
       this.deliverNextSector();
     }

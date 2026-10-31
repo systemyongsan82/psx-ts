@@ -20,6 +20,7 @@ export interface CdTiming {
   readonly sectorCycles: number;
   readonly firstSectorCycles: number | null;
   readonly fixedSeekCycles: number | null;
+  readonly sectorRetryCycles: number | null;
 }
 
 export interface SioTiming {
@@ -57,6 +58,7 @@ export const HARDWARE_CD_TIMING: CdTiming = {
   sectorCycles: 451_584,
   firstSectorCycles: null,
   fixedSeekCycles: null,
+  sectorRetryCycles: null,
 };
 
 const PSXJIN_RESPONSE_CYCLES = 0x800;
@@ -79,6 +81,7 @@ export const PSXJIN_CD_TIMING: CdTiming = {
   sectorCycles: PSXJIN_SECTOR_CYCLES,
   firstSectorCycles: PSXJIN_READ_START_CYCLES,
   fixedSeekCycles: PSXJIN_RESPONSE_CYCLES,
+  sectorRetryCycles: PSXJIN_RESPONSE_CYCLES,
 };
 
 export const HARDWARE_SIO_TIMING: SioTiming = { byteCycles: null, replyImmediate: false, ackIrqDelay: 100, cardReadExtraDelay: 31_000 };

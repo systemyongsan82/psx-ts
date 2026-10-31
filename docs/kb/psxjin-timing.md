@@ -70,6 +70,20 @@ With 282,240 cycles per frame, PSXjin delivers 2.5 sectors per frame at double s
 | GPU DMA completion | `(words/4)/BIAS` cycles | PsxDma.cpp:104 |
 | MDEC out DMA | `(size/4)/BIAS` cycles | Mdec.cpp:288, 296 |
 
+| CD sector delivery | `cdrReadInterrupt` retries every 0x800 cycles while `cdr.Stat` is still pending, otherwise delivers and re-arms `cdReadTime` (`/2` at double speed) | CdRom.cpp:566-571, 595, 639-641 |
+| CD interrupt retry | `cdrInterrupt` re-arms 0x800 while `cdr.Stat` is set | CdRom.cpp:167-170 |
+| READ_ACK then first sector | `CDREAD_INT(0x40000)` | CdRom.cpp:517-526 |
+| CD DMA (DMA3) | completes immediately, no delay | CdRom.cpp:1066-1073 |
+| SPU DMA (DMA4) | completes immediately, no delay | PsxDma.cpp:58-59 |
+| MDEC-in DMA (DMA0) | completes immediately | Mdec.cpp:251-269 |
+| MDEC out `mdec1Interrupt` re-arm | `PSXCLK / 1000` while DMA1 still busy | Mdec.cpp:310-318 |
+| Root counter reads | count advances `BIAS * cycles / rate` (counters tick twice per cycle) | PsxCounters.cpp:356-361 |
+| Root counter 0/1 rate in hblank/dot modes | `vsync rate / 386 / 262`, `vsync rate / 262` | PsxCounters.cpp:313, 322 |
+| Movie frame boundary | `Movie.currentFrame++` at VSync End, 22 hsyncs after IRQ0 (VSync Start) | PsxCounters.cpp:129-147, 267-272 |
+| Pad value for a frame | first `PAD1_startPoll` after `iJoysToPoll = 2` (set in `execI` when `iVSyncFlag`) | plugins.cpp:446-482, PsxInterpreter.cpp:99-116 |
+
+Modelled in the psxjin profile: sector retry (`sectorRetryCycles`), GPU and MDEC-out completion (`dmaWordDivisor`). Root counter rates are not modelled; our line-driven timers advance 2150 per line, PSXjin 564,480 per frame (about 0.2% apart).
+
 ## Memory cards
 
 | Fact | Source |

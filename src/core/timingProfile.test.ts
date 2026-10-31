@@ -44,6 +44,8 @@ describe('timing profiles', () => {
     expect(cd.fixedSeekCycles).toBe(0x800);
     expect(PSXJIN_PROFILE.sio.byteCycles).toBe(200);
     expect(PSXJIN_PROFILE.dmaWordDivisor).toBe(2 * 4);
+    expect(PSXJIN_PROFILE.cd.sectorRetryCycles).toBe(0x800);
+    expect(HARDWARE_PROFILE.cd.sectorRetryCycles).toBeNull();
     expect(HARDWARE_PROFILE.dmaWordDivisor).toBeNull();
   });
 });
