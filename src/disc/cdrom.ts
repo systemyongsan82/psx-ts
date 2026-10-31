@@ -1,4 +1,5 @@
 import { CD_SECTOR_CYCLES, RAM_SIZE } from '../core/contracts';
+import { seekCycles } from './seektime';
 import type {
   CdFileEntry,
   CdromUnit,
@@ -30,7 +31,6 @@ const GETID_SECOND_CYCLES = 100_000;
 const READTOC_SECOND_CYCLES = 5_000_000;
 const MOTORON_SECOND_CYCLES = 33_000;
 const SETSESSION_SECOND_CYCLES = 10_000_000;
-const SEEK_CYCLES = 13_547_520;
 
 const IRQ_LINE = 2;
 
@@ -60,6 +60,11 @@ function msfToLba(min: number, sec: number, frame: number): number {
   return min * 60 * 75 + sec * 75 + frame - 150;
 }
 
+interface PendingInt {
+  readonly num: number;
+  readonly bytes: Array<number>;
+}
+
 export class Cdrom implements CdromUnit {
   private readonly sched: Scheduler;
   private readonly log: Logger;
@@ -76,7 +81,7 @@ export class Cdrom implements CdromUnit {
   private respExhausted = false;
   private readonly cmdParams = new Uint8Array(FIFO_SIZE);
 
-  private readonly respQueue: Array<number> = [];
+  private readonly pendingInts: Array<PendingInt> = [];
   private readonly locCache = new Uint8Array(HEADER_SIZE);
   private readonly xaRaw = new Uint8Array(RAW_SECTOR_SIZE);
   private readonly dataBuf = new Uint8Array(RAW_MINUS_SYNC_SIZE);
@@ -247,7 +252,7 @@ export class Cdrom implements CdromUnit {
       if (this.index === 0 || this.index === 2) {
         return (this.irqEnable & 0x1F) | 0xE0;
       }
-      const num = this.respQueue.length > 0 ? this.respQueue[0] : 0;
+      const num = this.pendingInts.length > 0 ? this.pendingInts[0].num : 0;
 
       return num | 0xE0;
     }
@@ -336,22 +341,15 @@ export class Cdrom implements CdromUnit {
 
   private writeIrqFlags(value: number): void {
     const ackBits = value & 0x1F;
-    if (ackBits !== 0) {
-      const keep: Array<number> = [];
-      for (let i = 0; i < this.respQueue.length; i++) {
-        const num = this.respQueue[i];
-        if ((ackBits & (1 << (num - 1))) === 0) {
-          keep.push(num);
-        }
-      }
-      this.respQueue.length = 0;
-      for (let i = 0; i < keep.length; i++) {
-        this.respQueue.push(keep[i]);
-      }
+    if (ackBits !== 0 && this.pendingInts.length > 0 && (ackBits & (1 << (this.pendingInts[0].num - 1))) !== 0) {
+      this.pendingInts.shift();
       this.respLen = 0;
       this.respPos = 0;
       this.respExhausted = false;
       this.respWin.fill(0);
+      if (this.pendingInts.length > 0) {
+        this.presentHeadInt();
+      }
     }
     if ((value & 0x40) !== 0) {
       this.paramCount = 0;
@@ -364,67 +362,53 @@ export class Cdrom implements CdromUnit {
 
   // ---- interrupts ----
 
-  private queueInt(num: number): void {
-    if (this.respQueue.length >= 8) {
+  private deliver(num: number, bytes: Array<number>): void {
+    if (this.pendingInts.length >= 8) {
       this.log.warn('cdrom', 'response interrupt queue overflow');
 
       return;
     }
-    this.respQueue.push(num);
-    if ((this.irqEnable & (1 << (num - 1))) !== 0) {
+    this.pendingInts.push({ num, bytes });
+    if (this.pendingInts.length === 1) {
+      this.presentHeadInt();
+    }
+  }
+
+  private presentHeadInt(): void {
+    const head = this.pendingInts[0];
+    this.respWin.fill(0);
+    this.respPos = 0;
+    this.respExhausted = false;
+    if (head.bytes.length > FIFO_SIZE) {
+      this.log.warn('cdrom', 'response fifo overflow, bytes dropped');
+    }
+    this.respLen = Math.min(head.bytes.length, FIFO_SIZE);
+    for (let i = 0; i < this.respLen; i++) {
+      this.respWin[i] = head.bytes[i] & 0xFF;
+    }
+    if ((this.irqEnable & (1 << (head.num - 1))) !== 0) {
       this.irq.raise(IRQ_LINE);
     }
   }
 
-  private pushResponse(bytes: Array<number>): void {
-    if (this.respLen === 0) {
-      this.respWin.fill(0);
-      this.respPos = 0;
-      this.respExhausted = false;
-    }
-    for (let i = 0; i < bytes.length; i++) {
-      if (this.respLen >= FIFO_SIZE) {
-        this.log.warn('cdrom', 'response fifo overflow, bytes dropped');
-
-        return;
-      }
-      this.respWin[this.respLen] = bytes[i] & 0xFF;
-      this.respLen += 1;
-    }
-  }
-
   private respondAck(bytes: Array<number>): void {
-    this.pushResponse(bytes);
-    this.queueInt(3);
+    this.deliver(3, bytes);
   }
 
   private respondOne(byte: number, num: number): void {
-    if (this.respLen === 0) {
-      this.respWin.fill(0);
-      this.respPos = 0;
-      this.respExhausted = false;
-    }
-    if (this.respLen < FIFO_SIZE) {
-      this.respWin[this.respLen] = byte & 0xFF;
-      this.respLen += 1;
-    } else {
-      this.log.warn('cdrom', 'response fifo overflow, byte dropped');
-    }
-    this.queueInt(num);
+    this.deliver(num, [byte]);
   }
 
   private respondSecond(num: number, cycles: number, makeBytes: () => Array<number>): void {
     this.secondHandle = this.sched.at(cycles, () => {
       this.secondHandle = null;
-      this.pushResponse(makeBytes());
-      this.queueInt(num);
+      this.deliver(num, makeBytes());
     });
   }
 
   private respondError(code: number): void {
     this.errLatch = true;
-    this.pushResponse([0x11, code]);
-    this.queueInt(5);
+    this.deliver(5, [0x11, code]);
   }
 
   // ---- drive state helpers ----
@@ -686,8 +670,7 @@ export class Cdrom implements CdromUnit {
     if (this.locDirty) {
       this.locDirty = false;
       this.nextSectorLba = this.seekTarget;
-      const catchUp = this.seekTarget === this.cacheLba() ? period : SEEK_CYCLES;
-      this.sectorTimer = period - catchUp;
+      this.sectorTimer = -seekCycles(this.cacheLba(), this.seekTarget, period);
     } else {
       this.nextSectorLba = Math.max(0, this.nextSectorLba - 1);
       this.sectorTimer = 0;
@@ -700,7 +683,7 @@ export class Cdrom implements CdromUnit {
     this.spindleOff = false;
     this.seeking = true;
     const target = this.seekTarget;
-    const latency = target === this.cacheLba() ? FIRST_RESPONSE_CYCLES : SEEK_CYCLES;
+    const latency = seekCycles(this.cacheLba(), target, this.sectorPeriod());
     this.seekHandle = this.sched.at(latency, () => {
       this.seekHandle = null;
       this.finishSeek(target);

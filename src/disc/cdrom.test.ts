@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Cdrom } from './cdrom';
+import { seekCycles } from './seektime';
 import { PsxBinImage } from './image';
 import { IsoImage, readEntryBytes } from './iso9660';
 import { RingLogger } from '../core/logger';
@@ -320,7 +321,7 @@ test('setloc, seekL and the 8-byte location reports match real sector headers', 
   const seekAck = settle(f, 30_000);
   expect(seekAck.num).toBe(3);
   expect(seekAck.resp).toEqual([0x40]);
-  f.sched.advance(13_547_520);
+  f.sched.advance(seekCycles(0, (60 * 60 + 11) * 75 + 43 - 150, CD_SECTOR_CYCLES));
   const done = settle(f, 0);
   expect(done.num).toBe(2);
   expect(done.resp).toEqual([0x02]);
@@ -346,7 +347,7 @@ test('readN after setloc and seekL starts at the seek target, not the previous r
   settle(f, 30_000);
   sendCommand(f, 0x15, []);
   settle(f, 30_000);
-  f.sched.advance(13_547_520);
+  f.sched.advance(40_000_000);
   ackAll(f);
   sendCommand(f, 0x0E, [0x20]);
   settle(f, 30_000);
@@ -369,7 +370,7 @@ test('readN: INT3 then INT1 per sector, BFRD handshake, DRQSTS, DMA data', () =>
   expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x22] });
   setIndex(f, 0);
   expect(f.cd.load8(REG0) & 0x40).toBe(0x00);
-  f.cd.tick(CD_SECTOR_CYCLES);
+  f.cd.tick(seekCycles(0, 0, CD_SECTOR_CYCLES) + CD_SECTOR_CYCLES);
   expect(f.cd.load8(REG0) & 0x40).toBe(0x40);
   expect(intNumber(f)).toBe(1);
   expect(drainResponse(f)).toEqual([0x22]);
@@ -570,5 +571,52 @@ test('newer command replaces a still-busy older command', () => {
   ackAll(f);
   f.sched.advance(1_000_000);
   expect(drainResponse(f).length).toBe(0);
+  f.img.close();
+});
+test('back-to-back SeekL commands each deliver their own INT2 with the right response bytes', () => {
+  const f = makeDrive();
+  for (let round = 0; round < 3; round++) {
+    sendCommand(f, 0x02, [0x00, 0x02, 0x10 + round]);
+    expect(settle(f, 30_000).num).toBe(3);
+    sendCommand(f, 0x15, []);
+    expect(settle(f, 30_000)).toEqual({ num: 3, resp: [0x40] });
+    f.sched.advance(40_000_000);
+    const done = settle(f, 0);
+    expect(done.num).toBe(2);
+    expect(done.resp.length).toBe(1);
+  }
+  f.img.close();
+});
+
+test('a second response that becomes due while the first is unacknowledged waits in the queue and keeps its own bytes', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  settle(f, 30_000);
+  sendCommand(f, 0x15, []);
+  f.sched.advance(30_000);
+  expect(intNumber(f)).toBe(3);
+  f.sched.advance(40_000_000);
+  expect(intNumber(f)).toBe(3);
+  expect(drainResponse(f)).toEqual([0x40]);
+  setIndex(f, 1);
+  f.cd.store8(REG3, 0x07);
+  expect(intNumber(f)).toBe(2);
+  expect(drainResponse(f)).toEqual([0x02]);
+  f.img.close();
+});
+
+test('commands issued with a zero-length seek still complete a ReadN/Pause cycle', () => {
+  const f = makeDrive();
+  sendCommand(f, 0x02, [0x00, 0x02, 0x00]);
+  settle(f, 30_000);
+  sendCommand(f, 0x06, []);
+  expect(settle(f, 30_000).num).toBe(3);
+  f.cd.tick(CD_SECTOR_CYCLES * 3);
+  expect(intNumber(f)).toBe(1);
+  ackAll(f);
+  sendCommand(f, 0x09, []);
+  expect(settle(f, 30_000).num).toBe(3);
+  f.sched.advance(2_500_000);
+  expect(intNumber(f)).toBe(2);
   f.img.close();
 });
