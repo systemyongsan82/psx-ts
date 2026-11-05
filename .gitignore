@@ -1,11 +1,12 @@
 node_modules/
 dist/
-shots/
+shots*/
+review*.html
 *.log
 .DS_Store
 
 # disc images are huge and user-owned
-"Resident Evil (USA)"/
+/Resident Evil (USA)/
 saves/
 test-discs/
 
